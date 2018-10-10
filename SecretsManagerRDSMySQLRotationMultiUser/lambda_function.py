@@ -188,7 +188,8 @@ def set_secret(service_client, arn, token):
             for row in cur.fetchall():
                 grant = row[0].split(' TO ')
                 new_grant = "%s TO '%s'" % (grant[0], pending_dict['username'])
-                cur.execute(new_grant + " IDENTIFIED BY %s", pending_dict['password'])
+                new_grant_escaped = new_grant.replace('%','%%') # % is a special character in Python format strings.
+                cur.execute(new_grant_escaped + " IDENTIFIED BY %s", pending_dict['password'])
             conn.commit()
             logger.info("setSecret: Successfully set password for %s in MySQL DB for secret arn %s." % (pending_dict['username'], arn))
     finally:
