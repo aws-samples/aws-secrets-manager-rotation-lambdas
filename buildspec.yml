@@ -1,6 +1,13 @@
 version: 0.2
 
 phases:
+  install:
+    commands:
+      - echo 'This is for installing stuff'
+  pre_build:
+    commands:
+      - echo 'This is for the prebuild'
   build:
     commands:
-      - echo Build started
+      - echo 'Starting the build'
+  
