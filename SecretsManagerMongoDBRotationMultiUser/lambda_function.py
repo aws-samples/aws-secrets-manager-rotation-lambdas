@@ -11,6 +11,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
+break
 def lambda_handler(event, context):
     """Secrets Manager MongoDB Handler
 
