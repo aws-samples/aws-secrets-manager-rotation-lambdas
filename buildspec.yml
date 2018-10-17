@@ -5,7 +5,8 @@ phases:
     commands:
       - echo 'Installing any needed dependencies"'
   pre_build:
-    commands:
+      commands:
+      - python --version
       - echo 'Compiling the code'
   build:
     commands:
