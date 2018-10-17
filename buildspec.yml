@@ -3,11 +3,13 @@ version: 0.2
 phases:
   install:
     commands:
-      - echo 'This is for installing stuff'
+      - echo 'Installing any needed dependencies"'
   pre_build:
     commands:
-      - echo 'This is for the prebuild'
+      - echo 'Compiling the code'
   build:
     commands:
-      - echo 'Starting the build'
-  
+      - echo 'Running unit tests'
+  post_build:
+    commands:
+      - echo 'Running integration tests'
