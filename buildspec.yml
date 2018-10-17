@@ -8,6 +8,7 @@ phases:
       commands:
       - python --version
       - echo 'Compiling the code'
+      - python -m py_compile ./*/*.py
   build:
     commands:
       - echo 'Running unit tests'
