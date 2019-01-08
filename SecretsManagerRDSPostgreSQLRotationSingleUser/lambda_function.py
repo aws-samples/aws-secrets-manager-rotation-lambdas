@@ -169,7 +169,7 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     try:
         with conn.cursor() as cur:
-            alter_role = "ALTER USER %s" % pending_dict['username']
+            alter_role = "ALTER USER \"%s\"" % pending_dict['username']
             cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
             conn.commit()
             logger.info("setSecret: Successfully set password for user %s in PostgreSQL DB for secret arn %s." % (pending_dict['username'], arn))

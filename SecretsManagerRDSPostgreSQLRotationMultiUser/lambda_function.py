@@ -187,11 +187,11 @@ def set_secret(service_client, arn, token):
             # If the user exists, just update the password
             cur.execute("SELECT 1 FROM pg_roles where rolname = %s", (pending_dict['username'],))
             if len(cur.fetchall()) == 0:
-                create_role = "CREATE ROLE %s" % pending_dict['username']
+                create_role = "CREATE ROLE \"%s\"" % pending_dict['username']
                 cur.execute(create_role + " WITH LOGIN PASSWORD %s", (pending_dict['password'],))
-                cur.execute("GRANT %s TO %s" % (current_dict['username'], pending_dict['username']))
+                cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['username'], pending_dict['username']))
             else:
-                alter_role = "ALTER USER %s" % pending_dict['username']
+                alter_role = "ALTER USER \"%s\"" % pending_dict['username']
                 cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
 
             conn.commit()
