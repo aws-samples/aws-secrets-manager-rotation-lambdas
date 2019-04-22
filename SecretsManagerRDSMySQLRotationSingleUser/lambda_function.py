@@ -48,7 +48,7 @@ def lambda_handler(event, context):
     token = event['ClientRequestToken']
     step = event['Step']
 
-    logger.info("Step %s" % step)
+    logger.debug("Step %s" % step)
 
     # Setup the client
     service_client = boto3.client('secretsmanager', endpoint_url=os.environ['SECRETS_MANAGER_ENDPOINT'])
