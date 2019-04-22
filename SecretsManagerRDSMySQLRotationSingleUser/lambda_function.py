@@ -48,6 +48,8 @@ def lambda_handler(event, context):
     token = event['ClientRequestToken']
     step = event['Step']
 
+    logger.info("Step %s" % step)
+
     # Setup the client
     service_client = boto3.client('secretsmanager', endpoint_url=os.environ['SECRETS_MANAGER_ENDPOINT'])
 
@@ -156,6 +158,7 @@ def set_secret(service_client, arn, token):
     if not conn:
         # If both current and pending do not work, try previous
         try:
+            logger.info("setSecret: trying using AWSPREVIOUS, unable to connect using  AWSPENDING and AWSCURRENT")
             conn = get_connection(get_secret_dict(service_client, arn, "AWSPREVIOUS"))
         except service_client.exceptions.ResourceNotFoundException:
             conn = None
@@ -270,6 +273,10 @@ def get_connection(secret_dict):
         conn = pymysql.connect(secret_dict['host'], user=secret_dict['username'], passwd=secret_dict['password'], port=port, db=dbname, connect_timeout=5)
         return conn
     except pymysql.OperationalError:
+        logger.exception("Unable to open database connection")
+        return None
+    except:
+        logger.exception("Unknown error opening database connection")
         return None
 
 
