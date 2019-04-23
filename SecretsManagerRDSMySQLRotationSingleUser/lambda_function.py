@@ -158,9 +158,10 @@ def set_secret(service_client, arn, token):
     if not conn:
         # If both current and pending do not work, try previous
         try:
-            logger.info("setSecret: trying using AWSPREVIOUS, unable to connect using  AWSPENDING and AWSCURRENT")
+            logger.info("setSecret: Trying using previous secret, unable to log into database with pending and current secret of secret arn %s" % arn)
             conn = get_connection(get_secret_dict(service_client, arn, "AWSPREVIOUS"))
         except service_client.exceptions.ResourceNotFoundException:
+            logger.exception("setSecret: Unable to find previous secret of secret arn %s" % arn)
             conn = None
 
     # If we still don't have a connection, raise a ValueError
