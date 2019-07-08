@@ -182,14 +182,24 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     try:
         with conn.cursor() as cur:
-            # List the grants on the current user and add them to the pending user.
-            # This also creates the user if it does not already exist
+            cur.execute("SELECT User FROM mysql.user WHERE User = %s", pending_dict['username'])
+            # Create the user if it does not exist
+            if cur.rowcount == 0:
+                cur.execute("CREATE USER %s IDENTIFIED BY %s", (pending_dict['username'], pending_dict['password']))
+
+            # Copy grants to the new user
             cur.execute("SHOW GRANTS FOR %s", current_dict['username'])
             for row in cur.fetchall():
                 grant = row[0].split(' TO ')
                 new_grant = "%s TO '%s'" % (grant[0], pending_dict['username'])
                 new_grant_escaped = new_grant.replace('%','%%') # % is a special character in Python format strings.
-                cur.execute(new_grant_escaped + " IDENTIFIED BY %s", pending_dict['password'])
+                cur.execute(new_grant_escaped)
+
+            # Set the password for the user and commit
+            cur.execute("SELECT VERSION()")
+            ver = cur.fetchone()
+            password_option = get_password_option(ver[0])
+            cur.execute("SET PASSWORD FOR %s = " + password_option, (pending_dict['username'], pending_dict['password']))
             conn.commit()
             logger.info("setSecret: Successfully set password for %s in MySQL DB for secret arn %s." % (pending_dict['username'], arn))
     finally:
@@ -363,3 +373,22 @@ def get_alt_username(current_username):
         if len(new_username) > 16:
             raise ValueError("Unable to clone user, username length with _clone appended would exceed 16 characters")
         return new_username
+
+
+def get_password_option(version):
+    """Gets the password option template string to use for the SET PASSWORD sql query
+
+    This helper function takes in the mysql version and returns the appropriate password option template string that can
+    be used in the SET PASSWORD query for that mysql version.
+
+    Args:
+        version (string): The mysql database version
+
+    Returns:
+        PasswordOption: The password option string
+
+    """
+    if version.startswith("8"):
+        return "%s"
+    else:
+        return "PASSWORD(%s)"
