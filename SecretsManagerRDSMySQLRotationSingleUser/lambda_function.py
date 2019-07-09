@@ -168,7 +168,10 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     try:
         with conn.cursor() as cur:
-            cur.execute("SET PASSWORD = PASSWORD(%s)", pending_dict['password'])
+            cur.execute("SELECT VERSION()")
+            ver = cur.fetchone()
+            password_option = get_password_option(ver[0])
+            cur.execute("SET PASSWORD = " + password_option, pending_dict['password'])
             conn.commit()
             logger.info("setSecret: Successfully set password for user %s in MySQL DB for secret arn %s." % (pending_dict['username'], arn))
     finally:
@@ -315,3 +318,22 @@ def get_secret_dict(service_client, arn, stage, token=None):
 
     # Parse and return the secret JSON string
     return secret_dict
+
+
+def get_password_option(version):
+    """Gets the password option template string to use for the SET PASSWORD sql query
+
+    This helper function takes in the mysql version and returns the appropriate password option template string that can
+    be used in the SET PASSWORD query for that mysql version.
+
+    Args:
+        version (string): The mysql database version
+
+    Returns:
+        PasswordOption: The password option string
+
+    """
+    if version.startswith("8"):
+        return "%s"
+    else:
+        return "PASSWORD(%s)"

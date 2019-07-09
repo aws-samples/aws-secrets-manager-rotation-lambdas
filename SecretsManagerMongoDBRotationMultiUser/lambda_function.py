@@ -29,6 +29,7 @@ def lambda_handler(event, context):
         'dbname': <optional: database name>,
         'port': <optional: if not specified, default port 27017 will be used>,
         'masterarn': <required: the arn of the master secret which will be used to create users/change passwords>
+        'ssl': <optional: if not specified, defaults to false. This must be true if being used for DocumentDB rotations where the cluster has TLS enabled>
     }
 
     Args:
@@ -282,10 +283,13 @@ def get_connection(secret_dict):
     """
     port = int(secret_dict['port']) if 'port' in secret_dict else 27017
     dbname = secret_dict['dbname'] if 'dbname' in secret_dict else "admin"
+    ssl = False
+    if 'ssl' in secret_dict:
+        ssl = (secret_dict['ssl'].lower() == "true") if type(secret_dict['ssl']) is str else bool(secret_dict['ssl'])
 
     # Try to obtain a connection to the db
     try:
-        client = MongoClient(host=secret_dict['host'], port=port, connectTimeoutMS=5000, serverSelectionTimeoutMS=5000)
+        client = MongoClient(host=secret_dict['host'], port=port, connectTimeoutMS=5000, serverSelectionTimeoutMS=5000, ssl=ssl)
         db = client[dbname]
         db.authenticate(secret_dict['username'], secret_dict['password'])
         return db
