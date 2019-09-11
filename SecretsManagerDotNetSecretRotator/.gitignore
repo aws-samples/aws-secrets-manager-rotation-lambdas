@@ -1,0 +1,9 @@
+*/.vs
+*/bin
+*/obj
+/Source/SecretRotator/bin
+/Source/SecretRotator/obj
+/Source/SecretRotator.LetsEncryptAccountKey/bin
+/Source/SecretRotator.LetsEncryptAccountKey/obj
+/Source/SecretRotator.Tests/bin
+/Source/SecretRotator.Tests/obj
