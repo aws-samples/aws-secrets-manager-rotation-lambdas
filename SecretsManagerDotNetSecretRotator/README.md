@@ -7,7 +7,7 @@ This frameworks aims to make the process of developing a custom secret rotation 
 | Name | Description |
 | ----- | -----------|
 | [SecretRotator](./Source/SecretRotator) Project | This project contains the framework that abstracts the AWS Secrets Manager. There is no implementation specific stuff located in here. |
-| [SecretRotator<TSecret>](/Source/SecretRotator/SecretRotator.cs) Class | Imlement this abstract base class with your own implementation. The only requied method is CreateSecret. You can handle events for Set, Test, and Finish if there is additional logic you want to provide at those steps. |
+| [SecretRotator<TSecret>](./Source/SecretRotator/SecretRotator.cs) Class | Imlement this abstract base class with your own implementation. The only requied method is CreateSecret. You can handle events for Set, Test, and Finish if there is additional logic you want to provide at those steps. |
 
 ## Let's Encrypt Example
 An [example plugin](./Source/SecretRotator.LetsEncryptAccountKey/LetsEncryptAccountKeySecretRotator.cs) has been provided for [Let's Enrypt](https://letsencrypt.org/) account keys. Let's Encrypt is a free, automated, and open Certificate Authority. To issue SSL certificates you need an account key. This plugin creates the account key and stores it in AWS Secret Manager and changes the account key when a rotation event is triggered.
