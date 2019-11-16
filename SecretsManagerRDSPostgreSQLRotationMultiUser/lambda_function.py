@@ -5,8 +5,7 @@ import boto3
 import json
 import logging
 import os
-import pg
-import pgdb
+import psycopg2
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -304,7 +303,7 @@ def get_connection(secret_dict):
         secret_dict (dict): The Secret Dictionary
 
     Returns:
-        Connection: The pgdb.Connection object if successful. None otherwise
+        Connection: The psycopg2.Connection object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -316,9 +315,16 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port, connect_timeout=5)
+        conn = psycopg2.connect(
+            host=secret_dict['host'],
+            user=secret_dict['username'],
+            password=secret_dict['password'],
+            database=dbname,
+            port=port,
+            connect_timeout=5,
+        )
         return conn
-    except pg.InternalError:
+    except psycopg2.Error:
         return None
 
 
