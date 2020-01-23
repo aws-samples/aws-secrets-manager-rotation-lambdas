@@ -5,7 +5,6 @@ import boto3
 import json
 import logging
 import os
-import pg
 import pgdb
 
 logger = logging.getLogger()
@@ -271,7 +270,7 @@ def get_connection(secret_dict):
     try:
         conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port, connect_timeout=5)
         return conn
-    except pg.InternalError:
+    except pgdb.InternalError:
         return None
 
 
