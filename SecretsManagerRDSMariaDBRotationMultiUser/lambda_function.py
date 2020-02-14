@@ -118,8 +118,10 @@ def create_secret(service_client, arn, token):
         # Get the alternate username swapping between the original user and the user with _clone appended to it
         current_dict['username'] = get_alt_username(current_dict['username'])
 
+        # Get exclude characters from environment variable
+        exclude_characters = os.environ['EXCLUDE_CHARACTERS'] if 'EXCLUDE_CHARACTERS' in os.environ else '/@"\'\\'
         # Generate a random password
-        passwd = service_client.get_random_password(ExcludeCharacters='/@"\'\\')
+        passwd = service_client.get_random_password(ExcludeCharacters=exclude_characters)
         current_dict['password'] = passwd['RandomPassword']
 
         # Put the secret
