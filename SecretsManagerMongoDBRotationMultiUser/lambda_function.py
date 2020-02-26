@@ -285,7 +285,10 @@ def get_connection(secret_dict):
     dbname = secret_dict['dbname'] if 'dbname' in secret_dict else "admin"
     ssl = False
     if 'ssl' in secret_dict:
-        ssl = (secret_dict['ssl'].lower() == "true") if type(secret_dict['ssl']) in [str, unicode] else bool(secret_dict['ssl'])
+        if type(secret_dict['ssl']) is bool:
+	        ssl = secret_dict['ssl']
+	    else:
+	        ssl = (secret_dict['ssl'].lower() == "true")
 
     # Try to obtain a connection to the db
     try:
