@@ -114,7 +114,9 @@ def create_secret(service_client, arn, token):
         logger.info("createSecret: Successfully retrieved secret for %s." % arn)
     except service_client.exceptions.ResourceNotFoundException:
         # Generate a random password
-        passwd = service_client.get_random_password(ExcludeCharacters=':/@"\'\\')
+        aws_dms_limitations = ': ;+%'
+        obviously_problematic = ':/@"\'\\'
+        passwd = service_client.get_random_password(ExcludeCharacters=obviously_problematic + aws_dms_limitations)
         current_dict['password'] = passwd['RandomPassword']
 
         # Put the secret
