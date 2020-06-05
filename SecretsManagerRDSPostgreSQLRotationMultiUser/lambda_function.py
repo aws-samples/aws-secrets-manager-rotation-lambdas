@@ -189,10 +189,13 @@ def set_secret(service_client, arn, token):
             if len(cur.fetchall()) == 0:
                 create_role = "CREATE ROLE \"%s\"" % pending_dict['username']
                 cur.execute(create_role + " WITH LOGIN PASSWORD %s", (pending_dict['password'],))
-                cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['username'], pending_dict['username']))
             else:
                 alter_role = "ALTER USER \"%s\"" % pending_dict['username']
                 cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
+            
+            # Always grant the current user's access to the pending user in case it's changed since the last
+            # rotation
+            cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['username'], pending_dict['username']))
 
             conn.commit()
             logger.info("setSecret: Successfully created user %s in PostgreSQL DB for secret arn %s." % (pending_dict['username'], arn))
