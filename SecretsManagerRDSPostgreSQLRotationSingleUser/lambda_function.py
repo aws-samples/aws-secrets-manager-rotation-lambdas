@@ -21,7 +21,7 @@ def lambda_handler(event, context):
 
     The Secret SecretString is expected to be a JSON string with the following format:
     {
-        'engine': <required: must be set to 'postgres'>,
+        'engine': <required: must be set to 'postgres' or 'aurora-postgresql'>,
         'host': <required: instance host name>,
         'username': <required: username>,
         'password': <required: password>,
@@ -309,8 +309,8 @@ def get_secret_dict(service_client, arn, stage, token=None):
     secret_dict = json.loads(plaintext)
 
     # Run validations against the secret
-    if 'engine' not in secret_dict or secret_dict['engine'] != 'postgres':
-        raise KeyError("Database engine must be set to 'postgres' in order to use this rotation lambda")
+    if 'engine' not in secret_dict or secret_dict['engine'] not in ('postgres', 'aurora-postgresql'):
+        raise KeyError("Database engine must be set to 'postgres' or 'aurora-postgresql' in order to use this rotation lambda")
     for field in required_fields:
         if field not in secret_dict:
             raise KeyError("%s key is missing from secret JSON" % field)
