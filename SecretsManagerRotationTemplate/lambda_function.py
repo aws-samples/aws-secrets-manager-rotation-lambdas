@@ -94,8 +94,10 @@ def create_secret(service_client, arn, token):
         service_client.get_secret_value(SecretId=arn, VersionId=token, VersionStage="AWSPENDING")
         logger.info("createSecret: Successfully retrieved secret for %s." % arn)
     except service_client.exceptions.ResourceNotFoundException:
+        # Get exclude characters from environment variable
+        exclude_characters = os.environ['EXCLUDE_CHARACTERS'] if 'EXCLUDE_CHARACTERS' in os.environ else '/@"\'\\'
         # Generate a random password
-        passwd = service_client.get_random_password(ExcludeCharacters='/@"\'\\')
+        passwd = service_client.get_random_password(ExcludeCharacters=exclude_characters)
 
         # Put the secret
         service_client.put_secret_value(SecretId=arn, ClientRequestToken=token, SecretString=passwd['RandomPassword'], VersionStages=['AWSPENDING'])
