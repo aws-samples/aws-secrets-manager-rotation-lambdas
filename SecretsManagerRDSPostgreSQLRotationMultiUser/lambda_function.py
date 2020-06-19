@@ -198,6 +198,22 @@ def set_secret(service_client, arn, token):
 
             conn.commit()
             logger.info("setSecret: Successfully created user %s in PostgreSQL DB for secret arn %s." % (pending_dict['username'], arn))
+
+            # If the current user is the '_clone' user, there might have been objects created in its name to which the normal user doesn't have access.
+            # We reassign the ownership back to the normal user to avoid permission-denied-errors. The other way around works without problems.
+            if current_dict['username'].endswith('_clone'):
+                reassign_ownership(current_dict, pending_dict['username'])
+    finally:
+        conn.close()
+
+
+def reassign_ownership(current_owner_dict, new_owner_username):
+    conn = get_connection(current_owner_dict)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("REASSIGN OWNED BY \"%s\" TO \"%s\"" % (current_owner_dict['username'], new_owner_username))
+            conn.commit()
+            logger.info("Reassigned ownership from %s to %s." % (current_owner_dict['username'], new_owner_username))
     finally:
         conn.close()
 
