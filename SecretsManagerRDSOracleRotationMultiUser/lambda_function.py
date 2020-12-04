@@ -198,8 +198,9 @@ def set_secret(service_client, arn, token):
                 cur.execute("SELECT DBMS_METADATA.GET_GRANTED_DDL('%s', '%s') FROM DUAL" % (grant_type, current_dict['username'].upper()))
                 results = cur.fetchall()
                 for row in results:
-                    sql = row[0].read().strip(' \n\t').replace("\"%s\"" % current_dict['username'].upper(), "\"%s\"" % pending_dict['username'])
-                    cur.execute(sql)
+                    sqls = row[0].read().strip(' \n\t').replace("\"%s\"" % current_dict['username'].upper(), "\"%s\"" % pending_dict['username'])
+                    for sql in sqls.split('\n'):
+                        cur.execute(sql)
             except cx_Oracle.DatabaseError:
                 # If we were unable to find any grants skip this type
                 pass
@@ -298,7 +299,7 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = cx_Oracle.connect(secret_dict['username'] + '/' + secret_dict['password'] + '@' + secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
+        conn = cx_Oracle.connect(secret_dict['username'],secret_dict['password'],secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
         return conn
     except (cx_Oracle.DatabaseError, cx_Oracle.OperationalError) :
         return None
