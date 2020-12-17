@@ -33,8 +33,8 @@ Manager Seamless Domain Join uses 'awsSeamlessDomainDirectoryId',
 within the secret. 
 """
 dict_key_directory = os.environ['DICT_KEY_DIRECTORY'] if 'DICT_KEY_DIRECTORY' in os.environ else 'DirectoryId'
-dict_key_username  = os.environ['DICT_KEY_USERNAME']  if 'DICT_KEY_USERNAME'  in os.environ else 'UserName'
-dict_key_password  = os.environ['DICT_KEY_PASSWORD']  if 'DICT_KEY_PASSWORD'  in os.environ else 'NewPassword'
+dict_key_username  = os.environ['DICT_KEY_USERNAME']  if 'DICT_KEY_USERNAME'  in os.environ else 'Username'
+dict_key_password  = os.environ['DICT_KEY_PASSWORD']  if 'DICT_KEY_PASSWORD'  in os.environ else 'Password'
 
 
 def lambda_handler(event, context):
