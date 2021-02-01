@@ -500,6 +500,9 @@ def apply_database_permissions(cursor, current_user, pending_user):
     for row in cursor.fetchall():
         sql_stmt = "ALTER ROLE %s ADD MEMBER %s" % (row['name'], pending_user)
 
+        # Assign each role from the current user to the pending user
+        cursor.execute(sql_stmt)
+
     # Loop through the database permissions and grant them to the user
     query = "SELECT "\
                 "class = perm.class, "\
