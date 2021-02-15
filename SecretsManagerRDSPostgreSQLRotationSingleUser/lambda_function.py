@@ -154,19 +154,46 @@ def set_secret(service_client, arn, token):
         logger.info("setSecret: AWSPENDING secret is already set as password in PostgreSQL DB for secret arn %s." % arn)
         return
 
-    # Now try the current password
-    conn = get_connection(get_secret_dict(service_client, arn, "AWSCURRENT"))
-    if not conn:
-        # If both current and pending do not work, try previous
-        try:
-            conn = get_connection(get_secret_dict(service_client, arn, "AWSPREVIOUS"))
-        except service_client.exceptions.ResourceNotFoundException:
-            conn = None
+    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
+    if 'masterarn' in current_dict:
+        logger.info("setSecret: Attempting rotation with master secret for target secret arn %s." % arn)
 
-    # If we still don't have a connection, raise a ValueError
-    if not conn:
-        logger.error("setSecret: Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
-        raise ValueError("Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
+        # Before we do anything with the secret, make sure the AWSCURRENT secret is valid by logging in to the db
+        # This ensures that the credential we are rotating is valid to protect against a confused deputy attack
+        conn = get_connection(current_dict)
+        if not conn:
+            logger.error("setSecret: Unable to log into database using current credentials for secret %s" % arn)
+            raise ValueError("Unable to log into database using current credentials for secret %s" % arn)
+        conn.close()
+
+        # Now get the master arn from the current secret
+        master_arn = current_dict['masterarn']
+        master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT")
+        if current_dict['host'] != master_dict['host']:
+            logger.warn("setSecret: Master database host %s is not the same host as current %s" % (master_dict['host'], current_dict['host']))
+
+        # Now log into the database with the master credentials
+        conn = get_connection(master_dict)
+        if not conn:
+            logger.error("setSecret: Unable to log into database using credentials in master secret %s" % master_arn)
+            raise ValueError("Unable to log into database using credentials in master secret %s" % master_arn)
+
+    else:
+        logger.info("setSecret: Attempting rotation with own credentials for secret arn %s." % arn)
+
+        # Now try the current password
+        conn = get_connection(current_dict)
+        if not conn:
+            # If both current and pending do not work, try previous
+            try:
+                conn = get_connection(get_secret_dict(service_client, arn, "AWSPREVIOUS"))
+            except service_client.exceptions.ResourceNotFoundException:
+                conn = None
+
+        # If we still don't have a connection, raise a ValueError
+        if not conn:
+            logger.error("setSecret: Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
+            raise ValueError("Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
 
     # Now set the password to the pending password
     try:
