@@ -185,13 +185,32 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     try:
         with conn.cursor() as cur:
-            # Check if the user exists, if not create it and grant it all permissions from the current role
-            # If the user exists, just update the password
+            # Make sure our shared rotation group role is created
+            cur.execute("SELECT 1 FROM pg_roles where rolname = %s", (pending_dict['rotation_group_role'],))
+            if len(cur.fetchall()) == 0:
+                # This role should have all the permissions your user roles need
+                # Do not create with CREATEROLE attribute, or your users will be able to change their own passwords
+                create_role = "CREATE ROLE \"%s\"" % pending_dict['rotation_group_role']
+                cur.execute(create_role + " WITH NOLOGIN")
+
+                # Allow shared rotation group role to have same permissions as the master in this case
+                # Assuming that master has the permissions our roles need
+                cur.execute("GRANT \"%s\" TO \"%s\"" % (master_dict['username'], pending_dict['rotation_group_role']))
+                logger.info("setSecret: Successfully created shared role %s in PostgreSQL DB." % pending_dict['rotation_group_role'])
+
+            # Set user's sessions' default current user to the shared group.
+            # Allows for created objects to be accessible/modifiable to both users
+            alter_role = "ALTER USER \"%s\"" % pending_dict['username']
+            cur.execute(alter_role + " SET ROLE %s", (pending_dict['rotation_group_role'],))
+            logger.info("setSecret: Successfully set user %s sessions' default current user to the shared role." % pending_dict['username'])
+
+            # Check if the user exists, if not create it and grant it all permissions from the master role
+            # If the user exists, update the password and grant permissions from the current role
             cur.execute("SELECT 1 FROM pg_roles where rolname = %s", (pending_dict['username'],))
             if len(cur.fetchall()) == 0:
                 create_role = "CREATE ROLE \"%s\"" % pending_dict['username']
                 cur.execute(create_role + " WITH LOGIN PASSWORD %s", (pending_dict['password'],))
-                cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['username'], pending_dict['username']))
+                cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['rotation_group_role'], pending_dict['username']))
             else:
                 alter_role = "ALTER USER \"%s\"" % pending_dict['username']
                 cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
