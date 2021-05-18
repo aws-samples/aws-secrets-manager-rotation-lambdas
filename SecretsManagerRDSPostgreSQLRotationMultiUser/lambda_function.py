@@ -192,6 +192,10 @@ def set_secret(service_client, arn, token):
                 create_role = "CREATE ROLE \"%s\"" % pending_dict['username']
                 cur.execute(create_role + " WITH LOGIN PASSWORD %s", (pending_dict['password'],))
                 cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['username'], pending_dict['username']))
+
+                # Set second user to assume the first role on login
+                # Created objects can be shared in between the two user roles in this way
+                cur.execute("ALTER USER \"%s\" SET ROLE \"%s\"" % (pending_dict['username'], current_dict['username']))
             else:
                 alter_role = "ALTER USER \"%s\"" % pending_dict['username']
                 cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
