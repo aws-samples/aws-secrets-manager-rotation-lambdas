@@ -191,11 +191,14 @@ def set_secret(service_client, arn, token):
             if len(cur.fetchall()) == 0:
                 create_role = "CREATE ROLE \"%s\"" % pending_dict['username']
                 cur.execute(create_role + " WITH LOGIN PASSWORD %s", (pending_dict['password'],))
-                cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['username'], pending_dict['username']))
 
-                # Set second user to assume the first role on login
-                # Created objects can be shared in between the two user roles in this way
-                cur.execute("ALTER USER \"%s\" SET ROLE \"%s\"" % (pending_dict['username'], current_dict['username']))
+                # Grant the shared rotation role that has all the perms the two users need
+                # Make sure shared role doesn't have CREATEROLE attribute, or users will be able to change passwords
+                cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['rotation_group_role'], pending_dict['username']))
+
+                # Set user to assume the shared rotation role
+                # Created schemas and objects can be shared/accessed in between the two user roles in this way
+                cur.execute("ALTER USER \"%s\" SET ROLE \"%s\"" % (pending_dict['username'], pending_dict['rotation_group_role']))
             else:
                 alter_role = "ALTER USER \"%s\"" % pending_dict['username']
                 cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
