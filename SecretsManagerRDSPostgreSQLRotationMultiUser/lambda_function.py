@@ -18,8 +18,8 @@ def lambda_handler(event, context):
     This handler uses the master-user rotation scheme to rotate an RDS PostgreSQL user credential. During the first rotation, this
     scheme logs into the database as the master user, creates a new user (appending _clone to the username), and grants the
     new user all of the permissions from the user being rotated. Once the secret is in this state, every subsequent rotation
-    simply creates a new secret with the AWSPREVIOUS user credentials, adds any missing permissions that are in the current
-    secret, changes that user's password, and then marks the latest secret as AWSCURRENT.
+    simply creates a new secret with the AWSPREVIOUS user credentials, changes that user's password, and then marks the
+    latest secret as AWSCURRENT.
 
     The Secret SecretString is expected to be a JSON string with the following format:
     {
