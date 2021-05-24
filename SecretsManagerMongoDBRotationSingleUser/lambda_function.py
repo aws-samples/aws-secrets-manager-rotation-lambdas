@@ -146,22 +146,43 @@ def set_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    # First try to login with the pending secret, if it succeeds, return
+    try:
+        previous_dict = get_secret_dict(service_client, arn, "AWSPREVIOUS")
+    except (service_client.exceptions.ResourceNotFoundException, KeyError):
+        previous_dict = None
+    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+    
+    # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
     if conn:
         conn.logout()
         logger.info("setSecret: AWSPENDING secret is already set as password in MongoDB for secret arn %s." % arn)
         return
 
+    # Make sure the user from current and pending match
+    if current_dict['username'] != pending_dict['username']:
+        logger.error("setSecret: Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
+        raise ValueError("Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
+
+    # Make sure the host from current and pending match
+    if current_dict['host'] != pending_dict['host']:
+        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+
     # Now try the current password
-    conn = get_connection(get_secret_dict(service_client, arn, "AWSCURRENT"))
-    if not conn:
+    conn = get_connection(current_dict)
+    if not conn and previous_dict:
         # If both current and pending do not work, try previous
-        try:
-            conn = get_connection(get_secret_dict(service_client, arn, "AWSPREVIOUS"))
-        except service_client.exceptions.ResourceNotFoundException:
-            conn = None
+        conn = get_connection(previous_dict)
+
+        # Make sure the user/host from previous and pending match
+        if previous_dict['username'] != pending_dict['username']:
+            logger.error("setSecret: Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
+            raise ValueError("Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
+        if previous_dict['host'] != pending_dict['host']:
+            logger.error("setSecret: Attempting to modify user for host %s other than previous host %s" % (pending_dict['host'], previous_dict['host']))
+            raise ValueError("Attempting to modify user for host %s other than previous host %s" % (pending_dict['host'], previous_dict['host']))
 
     # If we still don't have a connection, raise a ValueError
     if not conn:
@@ -172,6 +193,9 @@ def set_secret(service_client, arn, token):
     try:
         conn.command("updateUser", pending_dict['username'], pwd=pending_dict['password'])
         logger.info("setSecret: Successfully set password for user %s in MongoDB for secret arn %s." % (pending_dict['username'], arn))
+    except errors.PyMongoError:
+        logger.error("setSecret: Error encountered when attempting to set password in database for user %s", pending_dict['username'])
+        raise ValueError("Error encountered when attempting to set password in database for user %s", pending_dict['username'])
     finally:
         conn.logout()
 
@@ -267,10 +291,10 @@ def get_connection(secret_dict):
     ssl = False
     if 'ssl' in secret_dict:
         if type(secret_dict['ssl']) is bool:
-	        ssl = secret_dict['ssl']
-	    else:
-	        ssl = (secret_dict['ssl'].lower() == "true")
-            
+            ssl = secret_dict['ssl']
+        else:
+            ssl = (secret_dict['ssl'].lower() == "true")
+        
     # Try to obtain a connection to the db
     try:
         client = MongoClient(host=secret_dict['host'], port=port, connectTimeoutMS=5000, serverSelectionTimeoutMS=5000, ssl=ssl)
