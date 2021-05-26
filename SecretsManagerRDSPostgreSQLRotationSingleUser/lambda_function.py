@@ -146,22 +146,44 @@ def set_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    # First try to login with the pending secret, if it succeeds, return
+    try:
+        previous_dict = get_secret_dict(service_client, arn, "AWSPREVIOUS")
+    except (service_client.exceptions.ResourceNotFoundException, KeyError):
+        previous_dict = None
+    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+
+    # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
     if conn:
         conn.close()
         logger.info("setSecret: AWSPENDING secret is already set as password in PostgreSQL DB for secret arn %s." % arn)
         return
 
+    # Make sure the user from current and pending match
+    if current_dict['username'] != pending_dict['username']:
+        logger.error("setSecret: Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
+        raise ValueError("Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
+
+    # Make sure the host from current and pending match
+    if current_dict['host'] != pending_dict['host']:
+        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+
     # Now try the current password
-    conn = get_connection(get_secret_dict(service_client, arn, "AWSCURRENT"))
+    conn = get_connection(current_dict)
     if not conn:
-        # If both current and pending do not work, try previous
-        try:
-            conn = get_connection(get_secret_dict(service_client, arn, "AWSPREVIOUS"))
-        except service_client.exceptions.ResourceNotFoundException:
-            conn = None
+        if previous_dict:
+            # If both current and pending do not work, try previous
+            conn = get_connection(previous_dict)
+
+            # Make sure the user/host from previous and pending match
+            if previous_dict['username'] != pending_dict['username']:
+                logger.error("setSecret: Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
+                raise ValueError("Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
+            if previous_dict['host'] != pending_dict['host']:
+                logger.error("setSecret: Attempting to modify user for host %s other than previous valid host %s" % (pending_dict['host'], previous_dict['host']))
+                raise ValueError("Attempting to modify user for host %s other than current previous valid %s" % (pending_dict['host'], previous_dict['host']))
 
     # If we still don't have a connection, raise a ValueError
     if not conn:
@@ -171,7 +193,11 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     try:
         with conn.cursor() as cur:
-            alter_role = "ALTER USER \"%s\"" % pending_dict['username']
+            # Get escaped username via quote_ident
+            cur.execute("SELECT quote_ident(%s)", (pending_dict['username'],))
+            escaped_username = cur.fetchone()[0]
+
+            alter_role = "ALTER USER %s" % escaped_username
             cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
             conn.commit()
             logger.info("setSecret: Successfully set password for user %s in PostgreSQL DB for secret arn %s." % (pending_dict['username'], arn))

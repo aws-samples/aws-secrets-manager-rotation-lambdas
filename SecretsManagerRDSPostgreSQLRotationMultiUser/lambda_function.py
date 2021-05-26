@@ -154,16 +154,27 @@ def set_secret(service_client, arn, token):
 
     """
     # First try to login with the pending secret, if it succeeds, return
+    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+
     conn = get_connection(pending_dict)
     if conn:
         conn.close()
         logger.info("setSecret: AWSPENDING secret is already set as password in PostgreSQL DB for secret arn %s." % arn)
         return
 
+    # Make sure the user from current and pending match
+    if get_alt_username(current_dict['username']) != pending_dict['username']:
+        logger.error("setSecret: Attempting to modify user %s other than current user clone %s" % (pending_dict['username'], get_alt_username(current_dict['username'])))
+        raise ValueError("Attempting to modify user %s other than current user clone %s" % (pending_dict['username'], get_alt_username(current_dict['username'])))
+
+    # Make sure the host from current and pending match
+    if current_dict['host'] != pending_dict['host']:
+        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+
     # Before we do anything with the secret, make sure the AWSCURRENT secret is valid by logging in to the db
     # This ensures that the credential we are rotating is valid to protect against a confused deputy attack
-    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     conn = get_connection(current_dict)
     if not conn:
         logger.error("setSecret: Unable to log into database using current credentials for secret %s" % arn)
@@ -173,8 +184,10 @@ def set_secret(service_client, arn, token):
     # Now get the master arn from the current secret
     master_arn = current_dict['masterarn']
     master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT")
-    if current_dict['host'] != master_dict['host']:
-        logger.warn("setSecret: Master database host %s is not the same host as current %s" % (master_dict['host'], current_dict['host']))
+    if current_dict['host'] != master_dict['host'] and not is_rds_replica_database(current_dict, master_dict):
+        # If current dict is a replica of the master dict, can proceed
+        logger.error("setSecret: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
+        raise ValueError("Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
 
     # Now log into the database with the master credentials
     conn = get_connection(master_dict)
@@ -185,15 +198,21 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     try:
         with conn.cursor() as cur:
+            # Get escaped usernames via quote_ident
+            cur.execute("SELECT quote_ident(%s)", (pending_dict['username'],))
+            pending_username = cur.fetchone()[0]
+            cur.execute("SELECT quote_ident(%s)", (current_dict['username'],))
+            current_username = cur.fetchone()[0]
+
             # Check if the user exists, if not create it and grant it all permissions from the current role
             # If the user exists, just update the password
             cur.execute("SELECT 1 FROM pg_roles where rolname = %s", (pending_dict['username'],))
             if len(cur.fetchall()) == 0:
-                create_role = "CREATE ROLE \"%s\"" % pending_dict['username']
+                create_role = "CREATE ROLE %s" % pending_username
                 cur.execute(create_role + " WITH LOGIN PASSWORD %s", (pending_dict['password'],))
-                cur.execute("GRANT \"%s\" TO \"%s\"" % (current_dict['username'], pending_dict['username']))
+                cur.execute("GRANT %s TO %s" % (current_username, pending_username))
             else:
-                alter_role = "ALTER USER \"%s\"" % pending_dict['username']
+                alter_role = "ALTER USER %s" % pending_username
                 cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
 
             conn.commit()
@@ -372,3 +391,42 @@ def get_alt_username(current_username):
         if len(new_username) > 63:
             raise ValueError("Unable to clone user, username length with _clone appended would exceed 63 characters")
         return new_username
+
+def is_rds_replica_database(replica_dict, master_dict):
+    """Validates that the database of a secret is a replica of the database of the master secret
+
+    This helper function validates that the database of a secret is a replica of the database of the master secret.
+
+    Args:
+        replica_dict (dictionary): The secret dictionary containing the replica database
+
+        primary_dict (dictionary): The secret dictionary containing the primary database
+
+    Returns:
+        isReplica : whether or not the database is a replica
+
+    Raises:
+        ValueError: If the new username length would exceed the maximum allowed
+    """
+    # Setup the client
+    rds_client = boto3.client('rds')
+
+    # Get instance identifiers from endpoints
+    replica_instance_id = replica_dict['host'].split(".")[0]
+    master_instance_id = master_dict['host'].split(".")[0]
+
+    try:
+        describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=replica_instance_id)
+    except Exception as err:
+        logger.warn("Encountered error while verifying rds replica status: %s" % err)
+        return False
+    instances = describe_response['DBInstances']
+
+    # Host from current secret cannot be found
+    if not instances:
+        logger.info("Cannot verify replica status - no RDS instance found with identifier: %s" % replica_instance_id)
+        return False
+
+    # DB Instance identifiers are unique - can only be one result
+    current_instance = instances[0]
+    return master_instance_id == current_instance.get('ReadReplicaSourceDBInstanceIdentifier')

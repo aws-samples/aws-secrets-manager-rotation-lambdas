@@ -154,6 +154,7 @@ def set_secret(service_client, arn, token):
 
     """
     # First try to login with the pending secret, if it succeeds, return
+    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
     conn = get_connection(pending_dict)
     if conn:
@@ -161,9 +162,18 @@ def set_secret(service_client, arn, token):
         logger.info("setSecret: AWSPENDING secret is already set as password in MongoDB for secret arn %s." % arn)
         return
 
+    # Make sure the user from current and pending match
+    if get_alt_username(current_dict['username']) != pending_dict['username']:
+        logger.error("setSecret: Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
+        raise ValueError("Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
+
+    # Make sure the host from current and pending match
+    if current_dict['host'] != pending_dict['host']:
+        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+
     # Before we do anything with the secret, make sure the AWSCURRENT secret is valid by logging in to the db
     # This ensures that the credential we are rotating is valid to protect against a confused deputy attack
-    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     conn = get_connection(current_dict)
     if not conn:
         logger.error("setSecret: Unable to log into database using current credentials for secret %s" % arn)
@@ -174,7 +184,8 @@ def set_secret(service_client, arn, token):
     master_arn = current_dict['masterarn']
     master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT")
     if current_dict['host'] != master_dict['host']:
-        logger.warn("setSecret: Master database host %s is not the same host as current %s" % (master_dict['host'], current_dict['host']))
+        logger.error("setSecret: Current database host %s is not the same host as master %s" % (current_dict['host'], master_dict['host']))
+        raise ValueError("Current database host %s is not the same host as master %s" % (current_dict['host'], master_dict['host']))
 
     # Now log into the database with the master credentials
     conn = get_connection(master_dict)
@@ -191,6 +202,9 @@ def set_secret(service_client, arn, token):
             user_info = conn.command('usersInfo', current_dict['username'])
             conn.command("createUser", pending_dict['username'], pwd=pending_dict['password'], roles=user_info['users'][0]['roles'])
         logger.info("setSecret: Successfully set password for %s in MongoDB for secret arn %s." % (pending_dict['username'], arn))
+    except errors.PyMongoError:
+        logger.error("setSecret: Error encountered when attempting to set password in database for user %s", pending_dict['username'])
+        raise ValueError("Error encountered when attempting to set password in database for user %s", pending_dict['username'])
     finally:
         conn.logout()
 
@@ -288,9 +302,9 @@ def get_connection(secret_dict):
     ssl = False
     if 'ssl' in secret_dict:
         if type(secret_dict['ssl']) is bool:
-	        ssl = secret_dict['ssl']
-	    else:
-	        ssl = (secret_dict['ssl'].lower() == "true")
+            ssl = secret_dict['ssl']
+        else:
+            ssl = (secret_dict['ssl'].lower() == "true")
 
     # Try to obtain a connection to the db
     try:

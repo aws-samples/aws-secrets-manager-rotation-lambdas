@@ -152,17 +152,28 @@ def set_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    # First try to login with the pending secret, if it succeeds, return
+    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+
+    # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
     if conn:
         conn.close()
         logger.info("setSecret: AWSPENDING secret is already set as password in SQL Server DB for secret arn %s." % arn)
         return
 
+    # Make sure the user from current and pending match
+    if get_alt_username(current_dict['username']) != pending_dict['username']:
+        logger.error("setSecret: Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
+        raise ValueError("Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
+        
+    # Make sure the host from current and pending match
+    if current_dict['host'] != pending_dict['host']:
+        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+
     # Before we do anything with the secret, make sure the AWSCURRENT secret is valid by logging in to the db
     # This ensures that the credential we are rotating is valid to protect against a confused deputy attack
-    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     conn = get_connection(current_dict)
     if not conn:
         logger.error("setSecret: Unable to log into database using current credentials for secret %s" % arn)
@@ -172,8 +183,10 @@ def set_secret(service_client, arn, token):
     # Now get the master arn from the current secret
     master_arn = current_dict['masterarn']
     master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT")
-    if current_dict['host'] != master_dict['host']:
-        logger.warn("setSecret: Master database host %s is not the same host as current %s" % (master_dict['host'], current_dict['host']))
+    if current_dict['host'] != master_dict['host'] and not is_rds_replica_database(current_dict, master_dict):
+        # If current dict is a replica of the master dict, can proceed
+        logger.error("setSecret: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
+        raise ValueError("Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
 
     # Now log into the database with the master credentials
     conn = get_connection(master_dict)
@@ -403,12 +416,16 @@ def set_password_for_login(cursor, current_db, current_login, pending_dict):
         pymssql.OperationalError: If there are any errors running the SQL statements
 
     """
+    # Get escaped pending user via QUOTENAME
+    cursor.execute("SELECT QUOTENAME(%s) AS QUOTENAME", (pending_dict['username'],))
+    escaped_pending_username = cursor.fetchone()['QUOTENAME']
+
     # Check if the login exists, if not create it and grant it all permissions from the current user
     # If the user exists, just update the password
     cursor.execute("SELECT name FROM sys.server_principals WHERE name = %s", pending_dict['username'])
     if len(cursor.fetchall()) == 0:
         # Create the new login
-        create_login = "CREATE LOGIN %s" % pending_dict['username']
+        create_login = "CREATE LOGIN %s" % escaped_pending_username
         cursor.execute(create_login + " WITH PASSWORD = %s", pending_dict['password'])
 
         # Only handle server level permissions if we are connected the the master DB
@@ -416,13 +433,13 @@ def set_password_for_login(cursor, current_db, current_login, pending_dict):
             # Loop through the types of server permissions and grant them to the new login
             query = "SELECT state_desc, permission_name FROM sys.server_permissions perm "\
                     "JOIN sys.server_principals prin ON perm.grantee_principal_id = prin.principal_id "\
-                    "WHERE prin.name = '%s'" % current_login
-            cursor.execute(query)
+                    "WHERE prin.name = %s"
+            cursor.execute(query, current_login)
             for row in cursor.fetchall():
                 if row['state_desc'] == 'GRANT_WITH_GRANT_OPTION':
-                    cursor.execute("GRANT %s TO %s WITH GRANT OPTION" % (row['permission_name'], pending_dict['username']))
+                    cursor.execute("GRANT %s TO %s WITH GRANT OPTION" % (row['permission_name'], escaped_pending_username))
                 else:
-                    cursor.execute("%s %s TO %s" % (row['state_desc'], row['permission_name'], pending_dict['username']))
+                    cursor.execute("%s %s TO %s" % (row['state_desc'], row['permission_name'], escaped_pending_username))
 
         # We do not create user objects in the master database
         else:
@@ -434,12 +451,15 @@ def set_password_for_login(cursor, current_db, current_login, pending_dict):
             # Check if the user exists. If not, create it
             cursor.execute("SELECT name FROM sys.database_principals WHERE name = %s", alt_user)
             if len(cursor.fetchall()) == 0:
-                cursor.execute("CREATE USER %s FOR LOGIN %s" % (alt_user, pending_dict['username']))
+                # Get escaped alt user via QUOTENAME
+                cursor.execute("SELECT QUOTENAME(%s) AS QUOTENAME", (alt_user,))
+                escaped_alt_username = cursor.fetchone()['QUOTENAME']
+                cursor.execute("CREATE USER %s FOR LOGIN %s" % (escaped_alt_username, escaped_pending_username))
 
-            apply_database_permissions(cursor, cur_user, pending_dict['username'])
+            apply_database_permissions(cursor, cur_user, escaped_pending_username)
 
     else:
-        alter_stmt = "ALTER LOGIN %s" % pending_dict['username']
+        alter_stmt = "ALTER LOGIN %s" % escaped_pending_username
         cursor.execute(alter_stmt + " WITH PASSWORD = %s", pending_dict['password'])
 
 
@@ -459,17 +479,21 @@ def set_password_for_user(cursor, current_user, pending_dict):
         pymssql.OperationalError: If there are any errors running the SQL statements
 
     """
+    # Get escaped pending user via QUOTENAME
+    cursor.execute("SELECT QUOTENAME(%s) AS QUOTENAME", (pending_dict['username'],))
+    escaped_pending_username = cursor.fetchone()['QUOTENAME']
+
     # Check if the user exists, if not create it and grant it all permissions from the current user
     # If the user exists, just update the password
     cursor.execute("SELECT name FROM sys.database_principals WHERE name = %s", pending_dict['username'])
     if len(cursor.fetchall()) == 0:
         # Create the new user
-        create_login = "CREATE USER %s" % pending_dict['username']
+        create_login = "CREATE USER %s" % escaped_pending_username
         cursor.execute(create_login + " WITH PASSWORD = %s", pending_dict['password'])
 
-        apply_database_permissions(cursor, current_user, pending_dict['username'])
+        apply_database_permissions(cursor, current_user, escaped_pending_username)
     else:
-        alter_stmt = "ALTER USER %s" % pending_dict['username']
+        alter_stmt = "ALTER USER %s" % escaped_pending_username
         cursor.execute(alter_stmt + " WITH PASSWORD = %s", pending_dict['password'])
 
 
@@ -495,8 +519,8 @@ def apply_database_permissions(cursor, current_user, pending_user):
     query = "SELECT roleprin.name FROM sys.database_role_members rolemems "\
             "JOIN sys.database_principals roleprin ON roleprin.principal_id = rolemems.role_principal_id "\
             "JOIN sys.database_principals userprin ON userprin.principal_id = rolemems.member_principal_id "\
-            "WHERE userprin.name = '%s'" % current_user
-    cursor.execute(query)
+            "WHERE userprin.name = %s"
+    cursor.execute(query, current_user)
     for row in cursor.fetchall():
         sql_stmt = "ALTER ROLE %s ADD MEMBER %s" % (row['name'], pending_user)
 
@@ -549,8 +573,8 @@ def apply_database_permissions(cursor, current_user, pending_user):
             "LEFT JOIN sys.symmetric_keys symkey ON symkey.symmetric_key_id = perm.major_id "\
             "LEFT JOIN sys.certificates cert ON cert.certificate_id = perm.major_id "\
             "LEFT JOIN sys.asymmetric_keys asymkey ON asymkey.asymmetric_key_id = perm.major_id "\
-            "WHERE prin.name = '%s'" % current_user
-    cursor.execute(query)
+            "WHERE prin.name = %s"
+    cursor.execute(query, current_user)
     for row in cursor.fetchall():
         # Determine which type of permission this is and create the sql statement accordingly
         if row['class'] == 0: # Database permission
@@ -605,3 +629,42 @@ def apply_database_permissions(cursor, current_user, pending_user):
 
         # Execute the sql
         cursor.execute(sql_stmt)
+
+def is_rds_replica_database(replica_dict, master_dict):
+    """Validates that the database of a secret is a replica of the database of the master secret
+
+    This helper function validates that the database of a secret is a replica of the database of the master secret.
+
+    Args:
+        replica_dict (dictionary): The secret dictionary containing the replica database
+
+        primary_dict (dictionary): The secret dictionary containing the primary database
+
+    Returns:
+        isReplica : whether or not the database is a replica
+
+    Raises:
+        ValueError: If the new username length would exceed the maximum allowed
+    """
+    # Setup the client
+    rds_client = boto3.client('rds')
+
+    # Get instance identifiers from endpoints
+    replica_instance_id = replica_dict['host'].split(".")[0]
+    master_instance_id = master_dict['host'].split(".")[0]
+
+    try:
+        describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=replica_instance_id)
+    except Exception as err:
+        logger.warn("Encountered error while verifying rds replica status: %s" % err)
+        return False
+    instances = describe_response['DBInstances']
+
+    # Host from current secret cannot be found
+    if not instances:
+        logger.info("Cannot verify replica status - no RDS instance found with identifier: %s" % replica_instance_id)
+        return False
+
+    # DB Instance identifiers are unique - can only be one result
+    current_instance = instances[0]
+    return master_instance_id == current_instance.get('ReadReplicaSourceDBInstanceIdentifier')

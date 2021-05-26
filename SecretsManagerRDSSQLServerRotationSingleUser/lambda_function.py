@@ -145,24 +145,43 @@ def set_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    # First try to login with the pending secret, if it succeeds, return
+    try:
+        previous_dict = get_secret_dict(service_client, arn, "AWSPREVIOUS")
+    except (service_client.exceptions.ResourceNotFoundException, KeyError):
+        previous_dict = None
+    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+
+    # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
     if conn:
         conn.close()
         logger.info("setSecret: AWSPENDING secret is already set as password in SQL Server DB for secret arn %s." % arn)
         return
 
+    # Make sure the user from current and pending match
+    if current_dict['username'] != pending_dict['username']:
+        logger.error("setSecret: Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
+        raise ValueError("Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
+
+    # Make sure the host from current and pending match
+    if current_dict['host'] != pending_dict['host']:
+        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+
     # Now try the current password
-    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     conn = get_connection(current_dict)
-    if not conn:
+    if not conn and previous_dict:
         # If both current and pending do not work, try previous
-        try:
-            current_dict = get_secret_dict(service_client, arn, "AWSPREVIOUS")
-            conn = get_connection(current_dict)
-        except service_client.exceptions.ResourceNotFoundException:
-            conn = None
+        conn = get_connection(previous_dict)
+
+        # Make sure the user/host from previous and pending match
+        if previous_dict['username'] != pending_dict['username']:
+            logger.error("setSecret: Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
+            raise ValueError("Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
+        if previous_dict['host'] != pending_dict['host']:
+            logger.error("setSecret: Attempting to modify user for host %s other than previous host %s" % (pending_dict['host'], previous_dict['host']))
+            raise ValueError("Attempting to modify user for host %s other than previous host %s" % (pending_dict['host'], previous_dict['host']))
 
     # If we still don't have a connection, raise a ValueError
     if not conn:
@@ -172,6 +191,10 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     try:
         with conn.cursor() as cursor:
+            # Get escaped username via QUOTENAME
+            cursor.execute("SELECT QUOTENAME(%s) AS QUOTENAME", (current_dict['username'],))
+            escaped_username = cursor.fetchone()['QUOTENAME']
+
             # Get the current version and db
             cursor.execute("SELECT @@VERSION AS version")
             version = cursor.fetchall()[0]['version']
@@ -186,10 +209,10 @@ def set_secret(service_client, arn, token):
 
             # Set the user or login password (depending on database containment)
             if containment == 0:
-                alter_stmt = "ALTER LOGIN %s" % pending_dict['username']
+                alter_stmt = "ALTER LOGIN %s" % escaped_username
                 cursor.execute(alter_stmt + " WITH PASSWORD = %s OLD_PASSWORD = %s", (pending_dict['password'], current_dict['password']))
             else:
-                alter_stmt = "ALTER USER %s" % pending_dict['username']
+                alter_stmt = "ALTER USER %s" % escaped_username
                 cursor.execute(alter_stmt + " WITH PASSWORD = %s OLD_PASSWORD = %s", (pending_dict['password'], current_dict['password']))
 
             conn.commit()

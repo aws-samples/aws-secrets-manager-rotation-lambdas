@@ -152,17 +152,28 @@ def set_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    # First try to login with the pending secret, if it succeeds, return
+    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+
+    # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
     if conn:
         conn.close()
         logger.info("setSecret: AWSPENDING secret is already set as password in Oracle DB for secret arn %s." % arn)
         return
 
+    # Make sure the user from current and pending match
+    if get_alt_username(current_dict['username']) != pending_dict['username']:
+        logger.error("setSecret: Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
+        raise ValueError("Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
+
+    # Make sure the user from current and pending match
+    if current_dict['host'] != pending_dict['host']:
+        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+
     # Before we do anything with the secret, make sure the AWSCURRENT secret is valid by logging in to the db
     # This ensures that the credential we are rotating is valid to protect against a confused deputy attack
-    current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     conn = get_connection(current_dict)
     if not conn:
         logger.error("setSecret: Unable to log into database using current credentials for secret %s" % arn)
@@ -172,8 +183,10 @@ def set_secret(service_client, arn, token):
     # Now get the master arn from the current secret
     master_arn = current_dict['masterarn']
     master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT")
-    if current_dict['host'] != master_dict['host']:
-        logger.warn("setSecret: Master database host %s is not the same host as current %s" % (master_dict['host'], current_dict['host']))
+    if current_dict['host'] != master_dict['host'] and not is_rds_replica_database(current_dict, master_dict):
+        # If current dict is a replica of the master dict, can proceed
+        logger.error("setSecret: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
+        raise ValueError("Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
 
     # Now log into the database with the master credentials
     conn = get_connection(master_dict)
@@ -184,21 +197,32 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     cur = conn.cursor()
 
+    # Escape username via DBMS ENQUOTE_NAME
+    cur.execute("SELECT sys.DBMS_ASSERT.ENQUOTE_NAME(:username) FROM DUAL", username=pending_dict['username'])
+    escaped_username = cur.fetchone()[0]
+
+    # Escape current username via DBMS ENQUOTE_NAME
+    cur.execute("SELECT sys.DBMS_ASSERT.ENQUOTE_NAME(:username) FROM DUAL", username=current_dict['username'])
+    escaped_current = cur.fetchone()[0]
+
+    # Passwords cannot have double quotes in Oracle, remove any double quotes to allow the password to be properly escaped
+    pending_password = pending_dict['password'].replace("\"","")
+
     # Check to see if the user already exists
-    cur.execute("SELECT USERNAME FROM DBA_USERS WHERE USERNAME='%s'" %  pending_dict['username'])
+    cur.execute("SELECT USERNAME FROM DBA_USERS WHERE USERNAME=:username", username=pending_dict['username'].upper())
     results = cur.fetchall()
     if len(results) > 0:
         # If user exists, just change their password
-        cur.execute("ALTER USER %s IDENTIFIED BY \"%s\"" % (pending_dict['username'], pending_dict['password']))
+        cur.execute("ALTER USER %s IDENTIFIED BY \"%s\"" % (escaped_username, pending_password))
     else:
         # If user does not exist, create the user with appropriate grants
-        cur.execute("CREATE USER %s IDENTIFIED BY \"%s\"" % (pending_dict['username'], pending_dict['password']))
+        cur.execute("CREATE USER %s IDENTIFIED BY \"%s\"" % (escaped_username, pending_password))
         for grant_type in ['ROLE_GRANT', 'SYSTEM_GRANT', 'OBJECT_GRANT']:
             try:
-                cur.execute("SELECT DBMS_METADATA.GET_GRANTED_DDL('%s', '%s') FROM DUAL" % (grant_type, current_dict['username'].upper()))
+                cur.execute("SELECT DBMS_METADATA.GET_GRANTED_DDL(:grant_type, :username) FROM DUAL", grant_type=grant_type, username=current_dict['username'].upper())
                 results = cur.fetchall()
                 for row in results:
-                    sql = row[0].read().strip(' \n\t').replace("\"%s\"" % current_dict['username'].upper(), "\"%s\"" % pending_dict['username'])
+                    sql = row[0].read().strip(' \n\t').replace("%s" % escaped_current, "%s" % escaped_username)
                     cur.execute(sql)
             except cx_Oracle.DatabaseError:
                 # If we were unable to find any grants skip this type
@@ -298,7 +322,9 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = cx_Oracle.connect(secret_dict['username'] + '/' + secret_dict['password'] + '@' + secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
+        conn = cx_Oracle.connect(secret_dict['username'],
+                                 secret_dict['password'],
+                                 secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
         return conn
     except (cx_Oracle.DatabaseError, cx_Oracle.OperationalError) :
         return None
@@ -371,3 +397,42 @@ def get_alt_username(current_username):
         if len(new_username) > 30:
             raise ValueError("Unable to clone user, username length with _CLONE appended would exceed 30 characters")
         return new_username.upper()
+
+def is_rds_replica_database(replica_dict, master_dict):
+    """Validates that the database of a secret is a replica of the database of the master secret
+
+    This helper function validates that the database of a secret is a replica of the database of the master secret.
+
+    Args:
+        replica_dict (dictionary): The secret dictionary containing the replica database
+
+        primary_dict (dictionary): The secret dictionary containing the primary database
+
+    Returns:
+        isReplica : whether or not the database is a replica
+
+    Raises:
+        ValueError: If the new username length would exceed the maximum allowed
+    """
+    # Setup the client
+    rds_client = boto3.client('rds')
+
+    # Get instance identifiers from endpoints
+    replica_instance_id = replica_dict['host'].split(".")[0]
+    master_instance_id = master_dict['host'].split(".")[0]
+
+    try:
+        describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=replica_instance_id)
+    except Exception as err:
+        logger.warn("Encountered error while verifying rds replica status: %s" % err)
+        return False
+    instances = describe_response['DBInstances']
+
+    # Host from current secret cannot be found
+    if not instances:
+        logger.info("Cannot verify replica status - no RDS instance found with identifier: %s" % replica_instance_id)
+        return False
+
+    # DB Instance identifiers are unique - can only be one result
+    current_instance = instances[0]
+    return master_instance_id == current_instance.get('ReadReplicaSourceDBInstanceIdentifier')
