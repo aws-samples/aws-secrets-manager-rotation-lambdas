@@ -154,7 +154,7 @@ def set_secret(service_client, arn, token):
     """
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
-    
+
     # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
     if conn:
@@ -304,7 +304,7 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = pymysql.connect(secret_dict['host'], user=secret_dict['username'], passwd=secret_dict['password'], port=port, db=dbname, connect_timeout=5)
+        conn = pymysql.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], port=port, database=dbname, connect_timeout=5)
         return conn
     except pymysql.OperationalError:
         return None

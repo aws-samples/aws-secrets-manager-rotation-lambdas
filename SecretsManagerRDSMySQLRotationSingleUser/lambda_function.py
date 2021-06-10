@@ -293,7 +293,7 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = pymysql.connect(secret_dict['host'], user=secret_dict['username'], passwd=secret_dict['password'], port=port, db=dbname, connect_timeout=5)
+        conn = pymysql.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], port=port, database=dbname, connect_timeout=5)
         return conn
     except pymysql.OperationalError:
         return None
