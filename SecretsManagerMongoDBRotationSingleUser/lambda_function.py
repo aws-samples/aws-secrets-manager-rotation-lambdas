@@ -172,9 +172,14 @@ def set_secret(service_client, arn, token):
 
     # Now try the current password
     conn = get_connection(current_dict)
+
+    # If both current and pending do not work, try previous
     if not conn and previous_dict:
         # If both current and pending do not work, try previous
-        conn = get_connection(previous_dict)
+        # Update previous_dict to leverage current SSL settings
+        previous_dict.pop('ssl', None)
+        if 'ssl' in current_dict:
+            previous_dict['ssl'] = current_dict['ssl']
 
         # Make sure the user/host from previous and pending match
         if previous_dict['username'] != pending_dict['username']:
