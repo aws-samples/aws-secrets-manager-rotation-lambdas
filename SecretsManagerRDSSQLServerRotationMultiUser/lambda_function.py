@@ -17,8 +17,8 @@ def lambda_handler(event, context):
     This handler uses the master-user rotation scheme to rotate an RDS SQL Server user credential. During the first rotation, this
     scheme logs into the database as the master user, creates a new user (appending _clone to the username), and grants the
     new user all of the permissions from the user being rotated. Once the secret is in this state, every subsequent rotation
-    simply creates a new secret with the AWSPREVIOUS user credentials, adds any missing permissions that are in the current
-    secret, changes that user's password, and then marks the latest secret as AWSCURRENT.
+    simply creates a new secret with the AWSPREVIOUS user credentials, changes that user's password, and then marks the
+    latest secret as AWSCURRENT.
 
     The Secret SecretString is expected to be a JSON string with the following format:
     {
@@ -166,7 +166,7 @@ def set_secret(service_client, arn, token):
     if get_alt_username(current_dict['username']) != pending_dict['username']:
         logger.error("setSecret: Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
         raise ValueError("Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
-        
+
     # Make sure the host from current and pending match
     if current_dict['host'] != pending_dict['host']:
         logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
@@ -205,7 +205,7 @@ def set_secret(service_client, arn, token):
 
             # Determine if we are in a contained DB
             containment = 0
-            if not version.startswith("Microsoft SQL Server 2008"): # SQL Server 2008 does not support contained databases
+            if not version.startswith("Microsoft SQL Server 2008"):  # SQL Server 2008 does not support contained databases
                 cursor.execute("SELECT containment FROM sys.databases WHERE name = %s", current_db)
                 containment = cursor.fetchall()[0]['containment']
 
@@ -216,7 +216,7 @@ def set_secret(service_client, arn, token):
                 set_password_for_user(cursor, current_dict['username'], pending_dict)
 
             conn.commit()
-            logger.info("setSecret: Successfully created user %s in SQL Server DB for secret arn %s." % (pending_dict['username'], arn))
+            logger.info("setSecret: Successfully set password for %s in SQL Server DB for secret arn %s." % (pending_dict['username'], arn))
     finally:
         conn.close()
 
@@ -294,10 +294,11 @@ def finish_secret(service_client, arn, token):
 
 
 def get_connection(secret_dict):
-    """Gets a connection to SQL Server DB from a secret dictionary
+    """Gets a connection to a SQL Server DB from a secret dictionary
 
-    This helper function tries to connect to the database grabbing connection info
-    from the secret dictionary. If successful, it returns the connection, else None
+    This helper function uses connectivity information from the secret dictionary to initiate
+    connection attempt(s) to the database. Will attempt a fallback, non-SSL connection when
+    initial connection fails using SSL and fall_back is True.
 
     Args:
         secret_dict (dict): The Secret Dictionary
@@ -312,6 +313,81 @@ def get_connection(secret_dict):
     # Parse and validate the secret JSON string
     port = str(secret_dict['port']) if 'port' in secret_dict else '1433'
     dbname = secret_dict['dbname'] if 'dbname' in secret_dict else 'master'
+
+    # Get SSL connectivity configuration
+    use_ssl, fall_back = get_ssl_config(secret_dict)
+
+    # if an 'ssl' key is not found or does not contain a valid value, attempt an SSL connection and fall back to non-SSL on failure
+    conn = connect_and_authenticate(secret_dict, port, dbname, use_ssl)
+    if conn or not fall_back:
+        return conn
+    else:
+        return connect_and_authenticate(secret_dict, port, dbname, False)
+
+
+def get_ssl_config(secret_dict):
+    """Gets the desired SSL and fall back behavior using a secret dictionary
+
+    This helper function uses the existance and value the 'ssl' key in a secret dictionary
+    to determine desired SSL connectivity configuration. Its behavior is as follows:
+        - 'ssl' key DNE or invalid type/value: return True, True
+        - 'ssl' key is bool: return secret_dict['ssl'], False
+        - 'ssl' key equals "true" ignoring case: return True, False
+        - 'ssl' key equals "false" ignoring case: return False, False
+
+    Args:
+        secret_dict (dict): The Secret Dictionary
+
+    Returns:
+        Tuple(use_ssl, fall_back): SSL configuration
+            - use_ssl (bool): Flag indicating if an SSL connection should be attempted
+            - fall_back (bool): Flag indicating if non-SSL connection should be attempted if SSL connection fails
+
+    """
+    # Default to True for SSL and fall_back mode if 'ssl' key DNE
+    if 'ssl' not in secret_dict:
+        return True, True
+
+    # Handle type bool
+    if isinstance(secret_dict['ssl'], bool):
+        return secret_dict['ssl'], False
+
+    # Handle type string
+    if isinstance(secret_dict['ssl'], str):
+        ssl = secret_dict['ssl'].lower()
+        if ssl == "true":
+            return True, False
+        elif ssl == "false":
+            return False, False
+        else:
+            # Invalid string value, default to True for both SSL and fall_back mode
+            return True, True
+
+    # Invalid type, default to True for both SSL and fall_back mode
+    return True, True
+
+
+def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
+    """Attempt to connect and authenticate to a SQL Server DB
+
+    This helper function tries to connect to the database using connectivity info passed in.
+    If successful, it returns the connection, else None
+
+    Args:
+        - secret_dict (dict): The Secret Dictionary
+        - port (int): The databse port to connect to
+        - dbname (str): Name of the database
+        - use_ssl (bool): Flag indicating whether connection should use SSL/TLS
+
+    Returns:
+        Connection: The pymssql.Connection object if successful. None otherwise
+
+    Raises:
+        KeyError: If the secret json does not contain the expected keys
+
+    """
+    # Dynamically set tds configuration based on ssl flag
+    os.environ['FREETDSCONF'] = '/var/task/%s' % 'freetds_ssl.conf' if use_ssl else 'freetds.conf'
 
     # Try to obtain a connection to the db
     try:
@@ -431,8 +507,8 @@ def set_password_for_login(cursor, current_db, current_login, pending_dict):
         # Only handle server level permissions if we are connected the the master DB
         if current_db == 'master':
             # Loop through the types of server permissions and grant them to the new login
-            query = "SELECT state_desc, permission_name FROM sys.server_permissions perm "\
-                    "JOIN sys.server_principals prin ON perm.grantee_principal_id = prin.principal_id "\
+            query = "SELECT state_desc, permission_name FROM sys.server_permissions perm " \
+                    "JOIN sys.server_principals prin ON perm.grantee_principal_id = prin.principal_id " \
                     "WHERE prin.name = %s"
             cursor.execute(query, current_login)
             for row in cursor.fetchall():
@@ -444,7 +520,9 @@ def set_password_for_login(cursor, current_db, current_login, pending_dict):
         # We do not create user objects in the master database
         else:
             # Get the user for the current login and generate the alt user
-            cursor.execute("SELECT dbprin.name FROM sys.database_principals dbprin JOIN sys.server_principals sprin ON dbprin.sid = sprin.sid WHERE sprin.name = %s", current_login)
+            cursor.execute(
+                "SELECT dbprin.name FROM sys.database_principals dbprin JOIN sys.server_principals sprin ON dbprin.sid = sprin.sid WHERE sprin.name = %s",
+                current_login)
             cur_user = cursor.fetchall()[0]['name']
             alt_user = get_alt_username(cur_user)
 
@@ -516,9 +594,9 @@ def apply_database_permissions(cursor, current_user, pending_user):
 
     """
     # Get the roles assigned to the current user and assign it to the pending user
-    query = "SELECT roleprin.name FROM sys.database_role_members rolemems "\
-            "JOIN sys.database_principals roleprin ON roleprin.principal_id = rolemems.role_principal_id "\
-            "JOIN sys.database_principals userprin ON userprin.principal_id = rolemems.member_principal_id "\
+    query = "SELECT roleprin.name FROM sys.database_role_members rolemems " \
+            "JOIN sys.database_principals roleprin ON roleprin.principal_id = rolemems.role_principal_id " \
+            "JOIN sys.database_principals userprin ON userprin.principal_id = rolemems.member_principal_id " \
             "WHERE userprin.name = %s"
     cursor.execute(query, current_user)
     for row in cursor.fetchall():
@@ -528,69 +606,69 @@ def apply_database_permissions(cursor, current_user, pending_user):
         cursor.execute(sql_stmt)
 
     # Loop through the database permissions and grant them to the user
-    query = "SELECT "\
-                "class = perm.class, "\
-                "state_desc = perm.state_desc, "\
-                "perm_name = perm.permission_name, "\
-                "schema_name = permschem.name, "\
-                "obj_name = obj.name, "\
-                "obj_schema_name = objschem.name, "\
-                "col_name = col.name, "\
-                "imp_name = imp.name, "\
-                "imp_type = imp.type, "\
-                "assembly_name = assembly.name, "\
-                "type_name = types.name, "\
-                "type_schema = typeschem.name, "\
-                "schema_coll_name = schema_coll.name, "\
-                "xml_schema = xmlschem.name, "\
-                "msg_type_name = msg_type.name, "\
-                "contract_name = contract.name, "\
-                "svc_name = svc.name, "\
-                "binding_name = binding.name, "\
-                "route_name = route.name, "\
-                "catalog_name = catalog.name, "\
-                "symkey_name = symkey.name, "\
-                "cert_name = cert.name, "\
-                "asymkey_name = asymkey.name "\
-            "FROM sys.database_permissions perm "\
-            "JOIN sys.database_principals prin ON perm.grantee_principal_id = prin.principal_id "\
-            "LEFT JOIN sys.schemas permschem ON permschem.schema_id = perm.major_id "\
-            "LEFT JOIN sys.objects obj ON obj.object_id = perm.major_id "\
-            "LEFT JOIN sys.schemas objschem ON objschem.schema_id = obj.schema_id "\
-            "LEFT JOIN sys.columns col ON col.object_id = perm.major_id AND col.column_id = perm.minor_id "\
-            "LEFT JOIN sys.database_principals imp ON imp.principal_id = perm.major_id "\
-            "LEFT JOIN sys.assemblies assembly ON assembly.assembly_id = perm.major_id "\
-            "LEFT JOIN sys.types types ON types.user_type_id = perm.major_id "\
-            "LEFT JOIN sys.schemas typeschem ON typeschem.schema_id = types.schema_id "\
-            "LEFT JOIN sys.xml_schema_collections schema_coll ON schema_coll.xml_collection_id = perm.major_id "\
-            "LEFT JOIN sys.schemas xmlschem ON xmlschem.schema_id = schema_coll.schema_id "\
-            "LEFT JOIN sys.service_message_types msg_type ON msg_type.message_type_id = perm.major_id "\
-            "LEFT JOIN sys.service_contracts contract ON contract.service_contract_id = perm.major_id "\
-            "LEFT JOIN sys.services svc ON svc.service_id = perm.major_id "\
-            "LEFT JOIN sys.remote_service_bindings binding ON binding.remote_service_binding_id = perm.major_id "\
-            "LEFT JOIN sys.routes route ON route.route_id = perm.major_id "\
-            "LEFT JOIN sys.fulltext_catalogs catalog ON catalog.fulltext_catalog_id = perm.major_id "\
-            "LEFT JOIN sys.symmetric_keys symkey ON symkey.symmetric_key_id = perm.major_id "\
-            "LEFT JOIN sys.certificates cert ON cert.certificate_id = perm.major_id "\
-            "LEFT JOIN sys.asymmetric_keys asymkey ON asymkey.asymmetric_key_id = perm.major_id "\
+    query = "SELECT " \
+            "class = perm.class, " \
+            "state_desc = perm.state_desc, " \
+            "perm_name = perm.permission_name, " \
+            "schema_name = permschem.name, " \
+            "obj_name = obj.name, " \
+            "obj_schema_name = objschem.name, " \
+            "col_name = col.name, " \
+            "imp_name = imp.name, " \
+            "imp_type = imp.type, " \
+            "assembly_name = assembly.name, " \
+            "type_name = types.name, " \
+            "type_schema = typeschem.name, " \
+            "schema_coll_name = schema_coll.name, " \
+            "xml_schema = xmlschem.name, " \
+            "msg_type_name = msg_type.name, " \
+            "contract_name = contract.name, " \
+            "svc_name = svc.name, " \
+            "binding_name = binding.name, " \
+            "route_name = route.name, " \
+            "catalog_name = catalog.name, " \
+            "symkey_name = symkey.name, " \
+            "cert_name = cert.name, " \
+            "asymkey_name = asymkey.name " \
+            "FROM sys.database_permissions perm " \
+            "JOIN sys.database_principals prin ON perm.grantee_principal_id = prin.principal_id " \
+            "LEFT JOIN sys.schemas permschem ON permschem.schema_id = perm.major_id " \
+            "LEFT JOIN sys.objects obj ON obj.object_id = perm.major_id " \
+            "LEFT JOIN sys.schemas objschem ON objschem.schema_id = obj.schema_id " \
+            "LEFT JOIN sys.columns col ON col.object_id = perm.major_id AND col.column_id = perm.minor_id " \
+            "LEFT JOIN sys.database_principals imp ON imp.principal_id = perm.major_id " \
+            "LEFT JOIN sys.assemblies assembly ON assembly.assembly_id = perm.major_id " \
+            "LEFT JOIN sys.types types ON types.user_type_id = perm.major_id " \
+            "LEFT JOIN sys.schemas typeschem ON typeschem.schema_id = types.schema_id " \
+            "LEFT JOIN sys.xml_schema_collections schema_coll ON schema_coll.xml_collection_id = perm.major_id " \
+            "LEFT JOIN sys.schemas xmlschem ON xmlschem.schema_id = schema_coll.schema_id " \
+            "LEFT JOIN sys.service_message_types msg_type ON msg_type.message_type_id = perm.major_id " \
+            "LEFT JOIN sys.service_contracts contract ON contract.service_contract_id = perm.major_id " \
+            "LEFT JOIN sys.services svc ON svc.service_id = perm.major_id " \
+            "LEFT JOIN sys.remote_service_bindings binding ON binding.remote_service_binding_id = perm.major_id " \
+            "LEFT JOIN sys.routes route ON route.route_id = perm.major_id " \
+            "LEFT JOIN sys.fulltext_catalogs catalog ON catalog.fulltext_catalog_id = perm.major_id " \
+            "LEFT JOIN sys.symmetric_keys symkey ON symkey.symmetric_key_id = perm.major_id " \
+            "LEFT JOIN sys.certificates cert ON cert.certificate_id = perm.major_id " \
+            "LEFT JOIN sys.asymmetric_keys asymkey ON asymkey.asymmetric_key_id = perm.major_id " \
             "WHERE prin.name = %s"
     cursor.execute(query, current_user)
     for row in cursor.fetchall():
         # Determine which type of permission this is and create the sql statement accordingly
-        if row['class'] == 0: # Database permission
+        if row['class'] == 0:  # Database permission
             permission = row['perm_name']
-        elif row['class'] == 1: # Object or Column
+        elif row['class'] == 1:  # Object or Column
             permission = "%s ON OBJECT::%s.%s" % (row['perm_name'], row['obj_schema_name'], row['obj_name'])
             if row['col_name']:
                 permission = "%s (%s) " % (permission, row['col_name'])
-        elif row['class'] == 3: # Schema
+        elif row['class'] == 3:  # Schema
             permission = "%s ON SCHEMA::%s" % (row['perm_name'], row['schema_name'])
-        elif row['class'] == 4: # Impersonation (Database Principal)
-            if row['imp_type'] == 'S': # SQL User
+        elif row['class'] == 4:  # Impersonation (Database Principal)
+            if row['imp_type'] == 'S':  # SQL User
                 permission = "%s ON USER::%s" % (row['perm_name'], row['imp_name'])
-            elif row['imp_type'] == 'R': # Role
+            elif row['imp_type'] == 'R':  # Role
                 permission = "%s ON ROLE::%s" % (row['perm_name'], row['imp_name'])
-            elif row['imp_type'] == 'A': # Application Role
+            elif row['imp_type'] == 'A':  # Application Role
                 permission = "%s ON APPLICATION ROLE::%s" % (row['perm_name'], row['imp_name'])
             else:
                 raise ValueError("Invalid database principal permission type %s" % row['imp_type'])
@@ -629,6 +707,7 @@ def apply_database_permissions(cursor, current_user, pending_user):
 
         # Execute the sql
         cursor.execute(sql_stmt)
+
 
 def is_rds_replica_database(replica_dict, master_dict):
     """Validates that the database of a secret is a replica of the database of the master secret
