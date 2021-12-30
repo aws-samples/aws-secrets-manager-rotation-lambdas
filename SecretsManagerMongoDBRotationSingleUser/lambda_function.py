@@ -152,7 +152,7 @@ def set_secret(service_client, arn, token):
         previous_dict = None
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
-    
+
     # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
     if conn:
@@ -175,11 +175,12 @@ def set_secret(service_client, arn, token):
 
     # If both current and pending do not work, try previous
     if not conn and previous_dict:
-        # If both current and pending do not work, try previous
         # Update previous_dict to leverage current SSL settings
         previous_dict.pop('ssl', None)
         if 'ssl' in current_dict:
             previous_dict['ssl'] = current_dict['ssl']
+
+        conn = get_connection(previous_dict)
 
         # Make sure the user/host from previous and pending match
         if previous_dict['username'] != pending_dict['username']:
@@ -277,8 +278,9 @@ def finish_secret(service_client, arn, token):
 def get_connection(secret_dict):
     """Gets a connection to MongoDB from a secret dictionary
 
-    This helper function tries to connect to the database grabbing connection info
-    from the secret dictionary. If successful, it returns the connection, else None
+    This helper function uses connectivity information from the secret dictionary to initiate
+    connection attempt(s) to the database. Will attempt a fallback, non-SSL connection when
+    initial connection fails using SSL and fall_back is True.
 
     Args:
         secret_dict (dict): The Secret Dictionary
@@ -293,16 +295,83 @@ def get_connection(secret_dict):
     # Parse and validate the secret JSON string
     port = int(secret_dict['port']) if 'port' in secret_dict else 27017
     dbname = secret_dict['dbname'] if 'dbname' in secret_dict else "admin"
-    ssl = False
-    if 'ssl' in secret_dict:
-        if type(secret_dict['ssl']) is bool:
-            ssl = secret_dict['ssl']
+
+    # Get SSL connectivity configuration
+    use_ssl, fall_back = get_ssl_config(secret_dict)
+
+    # if an 'ssl' key is not found or does not contain a valid value, attempt an SSL connection and fall back to non-SSL on failure
+    conn = connect_and_authenticate(secret_dict, port, dbname, use_ssl)
+    if conn or not fall_back:
+        return conn
+    else:
+        return connect_and_authenticate(secret_dict, port, dbname, False)
+
+
+def get_ssl_config(secret_dict):
+    """Gets the desired SSL and fall back behavior using a secret dictionary
+
+    This helper function uses the existance and value the 'ssl' key in a secret dictionary
+    to determine desired SSL connectivity configuration. Its behavior is as follows:
+        - 'ssl' key DNE or invalid type/value: return True, True
+        - 'ssl' key is bool: return secret_dict['ssl'], False
+        - 'ssl' key equals "true" ignoring case: return True, False
+        - 'ssl' key equals "false" ignoring case: return False, False
+
+    Args:
+        secret_dict (dict): The Secret Dictionary
+
+    Returns:
+        Tuple(use_ssl, fall_back): SSL configuration
+            - use_ssl (bool): Flag indicating if an SSL connection should be attempted
+            - fall_back (bool): Flag indicating if non-SSL connection should be attempted if SSL connection fails
+
+    """
+    # Default to True for SSL and fall_back mode if 'ssl' key DNE
+    if 'ssl' not in secret_dict:
+        return True, True
+
+    # Handle type bool
+    if isinstance(secret_dict['ssl'], bool):
+        return secret_dict['ssl'], False
+
+    # Handle type string
+    if isinstance(secret_dict['ssl'], str):
+        ssl = secret_dict['ssl'].lower()
+        if ssl == "true":
+            return True, False
+        elif ssl == "false":
+            return False, False
         else:
-            ssl = (secret_dict['ssl'].lower() == "true")
-        
+            # Invalid string value, default to True for both SSL and fall_back mode
+            return True, True
+
+    # Invalid type, default to True for both SSL and fall_back mode
+    return True, True
+
+
+def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
+    """Attempt to connect and authenticate to a MongoDB instance
+
+    This helper function tries to connect to the database using connectivity info passed in.
+    If successful, it returns the connection, else None
+
+    Args:
+        - secret_dict (dict): The Secret Dictionary
+        - port (int): The databse port to connect to
+        - dbname (str): Name of the database
+        - use_ssl (bool): Flag indicating whether connection should use SSL/TLS
+
+    Returns:
+        Connection: The pymongo.database.Database object if successful. None otherwise
+
+    Raises:
+        KeyError: If the secret json does not contain the expected keys
+
+    """
     # Try to obtain a connection to the db
     try:
-        client = MongoClient(host=secret_dict['host'], port=port, connectTimeoutMS=5000, serverSelectionTimeoutMS=5000, ssl=ssl)
+        # Hostname verfification and server certificate validation enabled by default when ssl=True
+        client = MongoClient(host=secret_dict['host'], port=port, connectTimeoutMS=5000, serverSelectionTimeoutMS=5000, ssl=use_ssl)
         db = client[dbname]
         db.authenticate(secret_dict['username'], secret_dict['password'])
         return db
