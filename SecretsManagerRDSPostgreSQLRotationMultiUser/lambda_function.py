@@ -1,6 +1,7 @@
 # Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import re
 import boto3
 import json
 import logging
@@ -398,8 +399,15 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
         else:
             conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
                                 connect_timeout=5, sslmode='disable')
+        logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
         return conn
-    except pg.InternalError:
+    except pg.InternalError as e:
+        if "server does not support SSL, but SSL was required" in e.args[0]:
+            logger.error("Unable to establish SSL/TLS handshake, SSL/TLS is not enabled on the host: %s" % secret_dict['host'])
+        elif re.search('server common name ".+" does not match host name ".+"', e.args[0]):
+            logger.error("Hostname verification failed when estlablishing SSL/TLS Handshake with host: %s" % secret_dict['host'])
+        elif re.search('no pg_hba.conf entry for host ".+", SSL off', e.args[0]):
+            logger.error("Unable to establish SSL/TLS handshake, SSL/TLS is enforced on the host: %s" % secret_dict['host'])
         return None
 
 
@@ -500,7 +508,7 @@ def is_rds_replica_database(replica_dict, master_dict):
     try:
         describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=replica_instance_id)
     except Exception as err:
-        logger.warn("Encountered error while verifying rds replica status: %s" % err)
+        logger.warning("Encountered error while verifying rds replica status: %s" % err)
         return False
     instances = describe_response['DBInstances']
 

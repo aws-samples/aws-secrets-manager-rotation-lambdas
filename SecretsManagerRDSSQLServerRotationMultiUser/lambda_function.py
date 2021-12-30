@@ -398,6 +398,7 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
                                port=port,
                                login_timeout=5,
                                as_dict=True)
+        logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
         return conn
     except pymssql.OperationalError:
         return None
@@ -735,7 +736,7 @@ def is_rds_replica_database(replica_dict, master_dict):
     try:
         describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=replica_instance_id)
     except Exception as err:
-        logger.warn("Encountered error while verifying rds replica status: %s" % err)
+        logger.warning("Encountered error while verifying rds replica status: %s" % err)
         return False
     instances = describe_response['DBInstances']
 

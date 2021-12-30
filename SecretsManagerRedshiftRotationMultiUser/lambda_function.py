@@ -18,8 +18,8 @@ def lambda_handler(event, context):
     This handler uses the master-user rotation scheme to rotate a Redshift user credential. During the first rotation, this
     scheme logs into the database as the master user, creates a new user (appending _clone to the username), and grants the
     new user all of the permissions from the user being rotated. Once the secret is in this state, every subsequent rotation
-    simply creates a new secret with the AWSPREVIOUS user credentials, adds any missing permissions that are in the current
-    secret, changes that user's password, and then marks the latest secret as AWSCURRENT.
+    simply creates a new secret with the AWSPREVIOUS user credentials, changes that user's password, and then marks the
+    latest secret as AWSCURRENT.
 
     The Secret SecretString is expected to be a JSON string with the following format:
     {
@@ -165,8 +165,9 @@ def set_secret(service_client, arn, token):
 
     # Make sure the user from current and pending match
     if get_alt_username(current_dict['username']) != pending_dict['username']:
-        logger.error("setSecret: Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], get_alt_username(current_dict['username'])))
-        raise ValueError("Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], get_alt_username(current_dict['username'])))
+        logger.error("setSecret: Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
+        raise ValueError(
+            "Attempting to modify user %s other than current user or clone %s" % (pending_dict['username'], current_dict['username']))
 
     # Make sure the host from current and pending match
     if current_dict['host'] != pending_dict['host']:
@@ -211,7 +212,8 @@ def set_secret(service_client, arn, token):
                 # Grant the database permissions
                 db_perm_types = ['CREATE', 'TEMPORARY', 'TEMP']
                 for perm in db_perm_types:
-                    cur.execute("SELECT QUOTE_IDENT(dat.datname) as datname FROM pg_database dat WHERE HAS_DATABASE_PRIVILEGE(%s, dat.datname , %s)", (current_dict['username'], perm))
+                    cur.execute("SELECT QUOTE_IDENT(dat.datname) as datname FROM pg_database dat WHERE HAS_DATABASE_PRIVILEGE(%s, dat.datname , %s)",
+                                (current_dict['username'], perm))
                     databases = [row.datname for row in cur.fetchall()]
                     if databases:
                         cur.execute("GRANT %s ON DATABASE %s TO %s" % (perm, ','.join(databases), pending_username))
@@ -219,9 +221,9 @@ def set_secret(service_client, arn, token):
                 # Grant table permissions
                 table_perm_types = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'REFERENCES']
                 for perm in table_perm_types:
-                    cur.execute("SELECT QUOTE_IDENT(tab.schemaname) as schemaname, QUOTE_IDENT(tab.tablename) as tablename FROM pg_tables tab WHERE "\
+                    cur.execute("SELECT QUOTE_IDENT(tab.schemaname) as schemaname, QUOTE_IDENT(tab.tablename) as tablename FROM pg_tables tab WHERE "
                                 "HAS_TABLE_PRIVILEGE(%s, QUOTE_IDENT(tab.schemaname) + '.' + QUOTE_IDENT(tab.tablename) , %s) AND tab.schemaname NOT IN ('pg_internal')",
-                                 (current_dict['username'], perm))
+                                (current_dict['username'], perm))
                     tables = [row.schemaname + '.' + row.tablename for row in cur.fetchall()]
                     if tables:
                         cur.execute("GRANT %s ON TABLE %s TO %s" % (perm, ','.join(tables), pending_username))
@@ -229,7 +231,9 @@ def set_secret(service_client, arn, token):
                 # Grant schema permissions
                 table_perm_types = ['CREATE', 'USAGE']
                 for perm in table_perm_types:
-                    cur.execute("SELECT QUOTE_IDENT(schemaname) as schemaname FROM (SELECT DISTINCT schemaname FROM pg_tables) WHERE HAS_SCHEMA_PRIVILEGE(%s, schemaname, %s)", (current_dict['username'], perm))
+                    cur.execute(
+                        "SELECT QUOTE_IDENT(schemaname) as schemaname FROM (SELECT DISTINCT schemaname FROM pg_tables) WHERE HAS_SCHEMA_PRIVILEGE(%s, schemaname, %s)",
+                        (current_dict['username'], perm))
                     schemas = [row.schemaname for row in cur.fetchall()]
                     if schemas:
                         cur.execute("GRANT %s ON SCHEMA %s TO %s" % (perm, ','.join(schemas), pending_username))
@@ -238,7 +242,7 @@ def set_secret(service_client, arn, token):
                 cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
 
             conn.commit()
-            logger.info("setSecret: Successfully created user %s in Redshift DB for secret arn %s." % (pending_dict['username'], arn))
+            logger.info("setSecret: Successfully set password for %s in Redshift DB for secret arn %s." % (pending_dict['username'], arn))
     finally:
         conn.close()
 
@@ -338,7 +342,9 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port, connect_timeout=5)
+        conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
+                            connect_timeout=5)
+        logger.info("Successfully established connection as user '%s' with host: '%s'" % (secret_dict['username'], secret_dict['host']))
         return conn
     except pg.InternalError:
         return None
