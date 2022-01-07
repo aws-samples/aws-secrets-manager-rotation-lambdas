@@ -1,6 +1,7 @@
 # Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import re
 import boto3
 import json
 import logging
@@ -374,8 +375,13 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
         client = MongoClient(host=secret_dict['host'], port=port, connectTimeoutMS=5000, serverSelectionTimeoutMS=5000, ssl=use_ssl)
         db = client[dbname]
         db.authenticate(secret_dict['username'], secret_dict['password'])
+        logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
         return db
-    except errors.PyMongoError:
+    except errors.PyMongoError as e:
+        if 'SSL handshake failed' in e.args[0]:
+            logger.error("Unable to establish SSL/TLS handshake, check that SSL/TLS is enabled on the host: %s" % secret_dict['host'])
+        elif re.search("hostname '.+' doesn't match", e.args[0]):
+            logger.error("Hostname verification failed when estlablishing SSL/TLS Handshake with host: %s" % secret_dict['host'])
         return None
 
 

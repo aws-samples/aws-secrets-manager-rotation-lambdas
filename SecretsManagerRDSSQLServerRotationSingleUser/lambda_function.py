@@ -401,6 +401,7 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
                                port=port,
                                login_timeout=5,
                                as_dict=True)
+        logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
         return conn
     except pymssql.OperationalError:
         return None

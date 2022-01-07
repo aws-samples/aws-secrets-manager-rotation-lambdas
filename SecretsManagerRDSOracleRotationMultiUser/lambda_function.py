@@ -17,8 +17,8 @@ def lambda_handler(event, context):
     This handler uses the master-user rotation scheme to rotate an RDS Oracle user credential. During the first rotation, this
     scheme logs into the database as the master user, creates a new user (appending _CLONE to the username), and grants the
     new user all of the permissions from the user being rotated. Once the secret is in this state, every subsequent rotation
-    simply creates a new secret with the AWSPREVIOUS user credentials, adds any missing permissions that are in the current
-    secret, changes that user's password, and then marks the latest secret as AWSCURRENT.
+    simply creates a new secret with the AWSPREVIOUS user credentials, changes that user's password, and then marks the
+    latest secret as AWSCURRENT.
 
     The Secret SecretString is expected to be a JSON string with the following format:
     {
@@ -206,7 +206,7 @@ def set_secret(service_client, arn, token):
     escaped_current = cur.fetchone()[0]
 
     # Passwords cannot have double quotes in Oracle, remove any double quotes to allow the password to be properly escaped
-    pending_password = pending_dict['password'].replace("\"","")
+    pending_password = pending_dict['password'].replace("\"", "")
 
     # Check to see if the user already exists
     cur.execute("SELECT USERNAME FROM DBA_USERS WHERE USERNAME=:username", username=pending_dict['username'].upper())
@@ -219,7 +219,8 @@ def set_secret(service_client, arn, token):
         cur.execute("CREATE USER %s IDENTIFIED BY \"%s\"" % (escaped_username, pending_password))
         for grant_type in ['ROLE_GRANT', 'SYSTEM_GRANT', 'OBJECT_GRANT']:
             try:
-                cur.execute("SELECT DBMS_METADATA.GET_GRANTED_DDL(:grant_type, :username) FROM DUAL", grant_type=grant_type, username=current_dict['username'].upper())
+                cur.execute("SELECT DBMS_METADATA.GET_GRANTED_DDL(:grant_type, :username) FROM DUAL", grant_type=grant_type,
+                            username=current_dict['username'].upper())
                 results = cur.fetchall()
                 for row in results:
                     sql = row[0].read().strip(' \n\t').replace("%s" % escaped_current, "%s" % escaped_username)
@@ -325,8 +326,9 @@ def get_connection(secret_dict):
         conn = cx_Oracle.connect(secret_dict['username'],
                                  secret_dict['password'],
                                  secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
+        logger.info("Successfully established connection as user '%s' with host: '%s'" % (secret_dict['username'], secret_dict['host']))
         return conn
-    except (cx_Oracle.DatabaseError, cx_Oracle.OperationalError) :
+    except (cx_Oracle.DatabaseError, cx_Oracle.OperationalError):
         return None
 
 
@@ -398,6 +400,7 @@ def get_alt_username(current_username):
             raise ValueError("Unable to clone user, username length with _CLONE appended would exceed 30 characters")
         return new_username.upper()
 
+
 def is_rds_replica_database(replica_dict, master_dict):
     """Validates that the database of a secret is a replica of the database of the master secret
 
@@ -424,7 +427,7 @@ def is_rds_replica_database(replica_dict, master_dict):
     try:
         describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=replica_instance_id)
     except Exception as err:
-        logger.warn("Encountered error while verifying rds replica status: %s" % err)
+        logger.warning("Encountered error while verifying rds replica status: %s" % err)
         return False
     instances = describe_response['DBInstances']
 

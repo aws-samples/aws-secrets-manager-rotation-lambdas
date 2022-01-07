@@ -173,7 +173,7 @@ def set_secret(service_client, arn, token):
     conn = get_connection(current_dict)
     if not conn and previous_dict:
         # If both current and pending do not work, try previous
-        conn = get_connection(pending_dict)
+        conn = get_connection(previous_dict)
 
         # Make sure the user/host from previous and pending match
         if previous_dict['username'] != pending_dict['username']:
@@ -195,10 +195,10 @@ def set_secret(service_client, arn, token):
     escaped_username = cur.fetchone()[0]
 
     # Passwords cannot have double quotes in Oracle, remove any double quotes to allow the password to be properly escaped
-    pending_password = pending_dict['password'].replace("\"","")
+    pending_password = pending_dict['password'].replace("\"", "")
 
     # Now set the password to the pending password
-    sql="ALTER USER %s IDENTIFIED BY \"%s\"" % (escaped_username, pending_dict['password'])
+    sql = "ALTER USER %s IDENTIFIED BY \"%s\"" % (escaped_username, pending_dict['password'])
     cur.execute(sql)
     conn.commit()
     logger.info("setSecret: Successfully set password for user %s in Oracle DB for secret arn %s." % (pending_dict['username'], arn))
@@ -295,8 +295,9 @@ def get_connection(secret_dict):
         conn = cx_Oracle.connect(secret_dict['username'],
                                  secret_dict['password'],
                                  secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
+        logger.info("Successfully established connection as user '%s' with host: '%s'" % (secret_dict['username'], secret_dict['host']))
         return conn
-    except (cx_Oracle.DatabaseError, cx_Oracle.OperationalError) :
+    except (cx_Oracle.DatabaseError, cx_Oracle.OperationalError):
         return None
 
 
