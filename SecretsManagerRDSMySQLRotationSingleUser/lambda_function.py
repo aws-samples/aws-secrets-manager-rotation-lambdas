@@ -44,28 +44,42 @@ def lambda_handler(event, context):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    arn = event['SecretId']
-    token = event['ClientRequestToken']
-    step = event['Step']
+    arn = event["SecretId"]
+    token = event["ClientRequestToken"]
+    step = event["Step"]
 
     # Setup the client
-    service_client = boto3.client('secretsmanager', endpoint_url=os.environ['SECRETS_MANAGER_ENDPOINT'])
+    service_client = boto3.client(
+        "secretsmanager", endpoint_url=os.environ["SECRETS_MANAGER_ENDPOINT"]
+    )
 
     # Make sure the version is staged correctly
     metadata = service_client.describe_secret(SecretId=arn)
-    if "RotationEnabled" in metadata and not metadata['RotationEnabled']:
+    if "RotationEnabled" in metadata and not metadata["RotationEnabled"]:
         logger.error("Secret %s is not enabled for rotation" % arn)
         raise ValueError("Secret %s is not enabled for rotation" % arn)
-    versions = metadata['VersionIdsToStages']
+    versions = metadata["VersionIdsToStages"]
     if token not in versions:
-        logger.error("Secret version %s has no stage for rotation of secret %s." % (token, arn))
-        raise ValueError("Secret version %s has no stage for rotation of secret %s." % (token, arn))
+        logger.error(
+            "Secret version %s has no stage for rotation of secret %s." % (token, arn)
+        )
+        raise ValueError(
+            "Secret version %s has no stage for rotation of secret %s." % (token, arn)
+        )
     if "AWSCURRENT" in versions[token]:
-        logger.info("Secret version %s already set as AWSCURRENT for secret %s." % (token, arn))
+        logger.info(
+            "Secret version %s already set as AWSCURRENT for secret %s." % (token, arn)
+        )
         return
     elif "AWSPENDING" not in versions[token]:
-        logger.error("Secret version %s not set as AWSPENDING for rotation of secret %s." % (token, arn))
-        raise ValueError("Secret version %s not set as AWSPENDING for rotation of secret %s." % (token, arn))
+        logger.error(
+            "Secret version %s not set as AWSPENDING for rotation of secret %s."
+            % (token, arn)
+        )
+        raise ValueError(
+            "Secret version %s not set as AWSPENDING for rotation of secret %s."
+            % (token, arn)
+        )
 
     # Call the appropriate step
     if step == "createSecret":
@@ -81,7 +95,9 @@ def lambda_handler(event, context):
         finish_secret(service_client, arn, token)
 
     else:
-        logger.error("lambda_handler: Invalid step parameter %s for secret %s" % (step, arn))
+        logger.error(
+            "lambda_handler: Invalid step parameter %s for secret %s" % (step, arn)
+        )
         raise ValueError("Invalid step parameter %s for secret %s" % (step, arn))
 
 
@@ -113,14 +129,28 @@ def create_secret(service_client, arn, token):
         logger.info("createSecret: Successfully retrieved secret for %s." % arn)
     except service_client.exceptions.ResourceNotFoundException:
         # Get exclude characters from environment variable
-        exclude_characters = os.environ['EXCLUDE_CHARACTERS'] if 'EXCLUDE_CHARACTERS' in os.environ else '/@"\'\\'
+        exclude_characters = (
+            os.environ["EXCLUDE_CHARACTERS"]
+            if "EXCLUDE_CHARACTERS" in os.environ
+            else "/@\"'\\"
+        )
         # Generate a random password
-        passwd = service_client.get_random_password(ExcludeCharacters=exclude_characters)
-        current_dict['password'] = passwd['RandomPassword']
+        passwd = service_client.get_random_password(
+            ExcludeCharacters=exclude_characters
+        )
+        current_dict["password"] = passwd["RandomPassword"]
 
         # Put the secret
-        service_client.put_secret_value(SecretId=arn, ClientRequestToken=token, SecretString=json.dumps(current_dict), VersionStages=['AWSPENDING'])
-        logger.info("createSecret: Successfully put secret for ARN %s and version %s." % (arn, token))
+        service_client.put_secret_value(
+            SecretId=arn,
+            ClientRequestToken=token,
+            SecretString=json.dumps(current_dict),
+            VersionStages=["AWSPENDING"],
+        )
+        logger.info(
+            "createSecret: Successfully put secret for ARN %s and version %s."
+            % (arn, token)
+        )
 
 
 def set_secret(service_client, arn, token):
@@ -156,18 +186,33 @@ def set_secret(service_client, arn, token):
     conn = get_connection(pending_dict)
     if conn:
         conn.close()
-        logger.info("setSecret: AWSPENDING secret is already set as password in MySQL DB for secret arn %s." % arn)
+        logger.info(
+            "setSecret: AWSPENDING secret is already set as password in MySQL DB for secret arn %s."
+            % arn
+        )
         return
 
     # Make sure the user from current and pending match
-    if current_dict['username'] != pending_dict['username']:
-        logger.error("setSecret: Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
-        raise ValueError("Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
+    if current_dict["username"] != pending_dict["username"]:
+        logger.error(
+            "setSecret: Attempting to modify user %s other than current user %s"
+            % (pending_dict["username"], current_dict["username"])
+        )
+        raise ValueError(
+            "Attempting to modify user %s other than current user %s"
+            % (pending_dict["username"], current_dict["username"])
+        )
 
     # Make sure the host from current and pending match
-    if current_dict['host'] != pending_dict['host']:
-        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
-        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+    if current_dict["host"] != pending_dict["host"]:
+        logger.error(
+            "setSecret: Attempting to modify user for host %s other than current host %s"
+            % (pending_dict["host"], current_dict["host"])
+        )
+        raise ValueError(
+            "Attempting to modify user for host %s other than current host %s"
+            % (pending_dict["host"], current_dict["host"])
+        )
 
     # Now try the current password
     conn = get_connection(current_dict)
@@ -175,24 +220,42 @@ def set_secret(service_client, arn, token):
     # If both current and pending do not work, try previous
     if not conn and previous_dict:
         # Update previous_dict to leverage current SSL settings
-        previous_dict.pop('ssl', None)
-        if 'ssl' in current_dict:
-            previous_dict['ssl'] = current_dict['ssl']
+        previous_dict.pop("ssl", None)
+        if "ssl" in current_dict:
+            previous_dict["ssl"] = current_dict["ssl"]
 
         conn = get_connection(previous_dict)
 
         # Make sure the user/host from previous and pending match
-        if previous_dict['username'] != pending_dict['username']:
-            logger.error("setSecret: Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
-            raise ValueError("Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
-        if previous_dict['host'] != pending_dict['host']:
-            logger.error("setSecret: Attempting to modify user for host %s other than previous host %s" % (pending_dict['host'], previous_dict['host']))
-            raise ValueError("Attempting to modify user for host %s other than previous host %s" % (pending_dict['host'], previous_dict['host']))
+        if previous_dict["username"] != pending_dict["username"]:
+            logger.error(
+                "setSecret: Attempting to modify user %s other than previous valid user %s"
+                % (pending_dict["username"], previous_dict["username"])
+            )
+            raise ValueError(
+                "Attempting to modify user %s other than previous valid user %s"
+                % (pending_dict["username"], previous_dict["username"])
+            )
+        if previous_dict["host"] != pending_dict["host"]:
+            logger.error(
+                "setSecret: Attempting to modify user for host %s other than previous host %s"
+                % (pending_dict["host"], previous_dict["host"])
+            )
+            raise ValueError(
+                "Attempting to modify user for host %s other than previous host %s"
+                % (pending_dict["host"], previous_dict["host"])
+            )
 
     # If we still don't have a connection, raise a ValueError
     if not conn:
-        logger.error("setSecret: Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
-        raise ValueError("Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
+        logger.error(
+            "setSecret: Unable to log into database with previous, current, or pending secret of secret arn %s"
+            % arn
+        )
+        raise ValueError(
+            "Unable to log into database with previous, current, or pending secret of secret arn %s"
+            % arn
+        )
 
     # Now set the password to the pending password
     try:
@@ -200,9 +263,12 @@ def set_secret(service_client, arn, token):
             cur.execute("SELECT VERSION()")
             ver = cur.fetchone()
             password_option = get_password_option(ver[0])
-            cur.execute("SET PASSWORD = " + password_option, pending_dict['password'])
+            cur.execute("SET PASSWORD = " + password_option, pending_dict["password"])
             conn.commit()
-            logger.info("setSecret: Successfully set password for user %s in MySQL DB for secret arn %s." % (pending_dict['username'], arn))
+            logger.info(
+                "setSecret: Successfully set password for user %s in MySQL DB for secret arn %s."
+                % (pending_dict["username"], arn)
+            )
     finally:
         conn.close()
 
@@ -240,11 +306,19 @@ def test_secret(service_client, arn, token):
         finally:
             conn.close()
 
-        logger.info("testSecret: Successfully signed into MySQL DB with AWSPENDING secret in %s." % arn)
+        logger.info(
+            "testSecret: Successfully signed into MySQL DB with AWSPENDING secret in %s."
+            % arn
+        )
         return
     else:
-        logger.error("testSecret: Unable to log into database with pending secret of secret ARN %s" % arn)
-        raise ValueError("Unable to log into database with pending secret of secret ARN %s" % arn)
+        logger.error(
+            "testSecret: Unable to log into database with pending secret of secret ARN %s"
+            % arn
+        )
+        raise ValueError(
+            "Unable to log into database with pending secret of secret ARN %s" % arn
+        )
 
 
 def finish_secret(service_client, arn, token):
@@ -267,14 +341,25 @@ def finish_secret(service_client, arn, token):
         if "AWSCURRENT" in metadata["VersionIdsToStages"][version]:
             if version == token:
                 # The correct version is already marked as current, return
-                logger.info("finishSecret: Version %s already marked as AWSCURRENT for %s" % (version, arn))
+                logger.info(
+                    "finishSecret: Version %s already marked as AWSCURRENT for %s"
+                    % (version, arn)
+                )
                 return
             current_version = version
             break
 
     # Finalize by staging the secret version current
-    service_client.update_secret_version_stage(SecretId=arn, VersionStage="AWSCURRENT", MoveToVersionId=token, RemoveFromVersionId=current_version)
-    logger.info("finishSecret: Successfully set AWSCURRENT stage to version %s for secret %s." % (token, arn))
+    service_client.update_secret_version_stage(
+        SecretId=arn,
+        VersionStage="AWSCURRENT",
+        MoveToVersionId=token,
+        RemoveFromVersionId=current_version,
+    )
+    logger.info(
+        "finishSecret: Successfully set AWSCURRENT stage to version %s for secret %s."
+        % (token, arn)
+    )
 
 
 def get_connection(secret_dict):
@@ -295,8 +380,8 @@ def get_connection(secret_dict):
 
     """
     # Parse and validate the secret JSON string
-    port = int(secret_dict['port']) if 'port' in secret_dict else 3306
-    dbname = secret_dict['dbname'] if 'dbname' in secret_dict else None
+    port = int(secret_dict["port"]) if "port" in secret_dict else 3306
+    dbname = secret_dict["dbname"] if "dbname" in secret_dict else None
 
     # Get SSL connectivity configuration
     use_ssl, fall_back = get_ssl_config(secret_dict)
@@ -329,16 +414,16 @@ def get_ssl_config(secret_dict):
 
     """
     # Default to True for SSL and fall_back mode if 'ssl' key DNE
-    if 'ssl' not in secret_dict:
+    if "ssl" not in secret_dict:
         return True, True
 
     # Handle type bool
-    if isinstance(secret_dict['ssl'], bool):
-        return secret_dict['ssl'], False
+    if isinstance(secret_dict["ssl"], bool):
+        return secret_dict["ssl"], False
 
     # Handle type string
-    if isinstance(secret_dict['ssl'], str):
-        ssl = secret_dict['ssl'].lower()
+    if isinstance(secret_dict["ssl"], str):
+        ssl = secret_dict["ssl"].lower()
         if ssl == "true":
             return True, False
         elif ssl == "false":
@@ -370,17 +455,41 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    ssl = {'ca': '/etc/pki/tls/cert.pem', } if use_ssl else None
+    ssl = (
+        {
+            "ca": "/etc/pki/tls/cert.pem",
+        }
+        if use_ssl
+        else None
+    )
 
     # Try to obtain a connection to the db
     try:
         # Checks hostname and verifies server certificate implictly when 'ca' key is in 'ssl' dictionary
-        conn = pymysql.connect(secret_dict['host'], user=secret_dict['username'], passwd=secret_dict['password'], port=port, db=dbname, connect_timeout=5, ssl=ssl)
-        logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
+        conn = pymysql.connect(
+            host=secret_dict["host"],
+            user=secret_dict["username"],
+            password=secret_dict["password"],
+            port=port,
+            database=dbname,
+            connect_timeout=5,
+            ssl=ssl,
+        )
+        logger.info(
+            "Successfully established %s connection as user '%s' with host: '%s'"
+            % (
+                "SSL/TLS" if use_ssl else "non SSL/TLS",
+                secret_dict["username"],
+                secret_dict["host"],
+            )
+        )
         return conn
     except pymysql.OperationalError as e:
-        if 'certificate verify failed: IP address mismatch' in e.args[1]:
-            logger.error("Hostname verification failed when estlablishing SSL/TLS Handshake with host: %s" % secret_dict['host'])
+        if "certificate verify failed: IP address mismatch" in e.args[1]:
+            logger.error(
+                "Hostname verification failed when estlablishing SSL/TLS Handshake with host: %s"
+                % secret_dict["host"]
+            )
         return None
 
 
@@ -407,19 +516,23 @@ def get_secret_dict(service_client, arn, stage, token=None):
         ValueError: If the secret is not valid JSON
 
     """
-    required_fields = ['host', 'username', 'password']
+    required_fields = ["host", "username", "password"]
 
     # Only do VersionId validation against the stage if a token is passed in
     if token:
-        secret = service_client.get_secret_value(SecretId=arn, VersionId=token, VersionStage=stage)
+        secret = service_client.get_secret_value(
+            SecretId=arn, VersionId=token, VersionStage=stage
+        )
     else:
         secret = service_client.get_secret_value(SecretId=arn, VersionStage=stage)
-    plaintext = secret['SecretString']
+    plaintext = secret["SecretString"]
     secret_dict = json.loads(plaintext)
 
     # Run validations against the secret
-    if 'engine' not in secret_dict or secret_dict['engine'] != 'mysql':
-        raise KeyError("Database engine must be set to 'mysql' in order to use this rotation lambda")
+    if "engine" not in secret_dict or secret_dict["engine"] != "mysql":
+        raise KeyError(
+            "Database engine must be set to 'mysql' in order to use this rotation lambda"
+        )
     for field in required_fields:
         if field not in secret_dict:
             raise KeyError("%s key is missing from secret JSON" % field)
