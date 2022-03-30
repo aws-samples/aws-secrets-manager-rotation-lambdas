@@ -375,7 +375,7 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
     # Try to obtain a connection to the db
     try:
         # Checks hostname and verifies server certificate implictly when 'ca' key is in 'ssl' dictionary
-        conn = pymysql.connect(secret_dict['host'], user=secret_dict['username'], passwd=secret_dict['password'], port=port, db=dbname, connect_timeout=5, ssl=ssl)
+        conn = pymysql.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], port=port, database=dbname, connect_timeout=5, ssl=ssl)
         logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
         return conn
     except pymysql.OperationalError as e:
