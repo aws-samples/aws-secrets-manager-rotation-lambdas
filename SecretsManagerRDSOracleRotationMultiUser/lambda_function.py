@@ -10,6 +10,8 @@ import cx_Oracle
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+MAX_RDS_DB_INSTANCE_ARN_LENGTH = 256
+
 
 def lambda_handler(event, context):
     """Secrets Manager RDS Oracle Handler
@@ -180,9 +182,10 @@ def set_secret(service_client, arn, token):
         raise ValueError("Unable to log into database using current credentials for secret %s" % arn)
     conn.close()
 
-    # Now get the master arn from the current secret
+    # Use the master arn from the current secret to fetch master secret contents
     master_arn = current_dict['masterarn']
-    master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT")
+    master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT", None, True)
+
     if current_dict['host'] != master_dict['host'] and not is_rds_replica_database(current_dict, master_dict):
         # If current dict is a replica of the master dict, can proceed
         logger.error("setSecret: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
@@ -332,7 +335,7 @@ def get_connection(secret_dict):
         return None
 
 
-def get_secret_dict(service_client, arn, stage, token=None):
+def get_secret_dict(service_client, arn, stage, token=None, master_secret=False):
     """Gets the secret dictionary corresponding for the secret arn, stage, and token
 
     This helper function gets credentials for the arn and stage passed in and returns the dictionary by parsing the JSON string
@@ -342,9 +345,11 @@ def get_secret_dict(service_client, arn, stage, token=None):
 
         arn (string): The secret ARN or other identifier
 
+        stage (string): The stage identifying the secret version
+
         token (string): The ClientRequestToken associated with the secret version, or None if no validation is desired
 
-        stage (string): The stage identifying the secret version
+        master_secret (boolean): A flag that indicates if we are getting a master secret
 
     Returns:
         SecretDictionary: Secret dictionary
@@ -355,7 +360,7 @@ def get_secret_dict(service_client, arn, stage, token=None):
         ValueError: If the secret is not valid JSON
 
     """
-    required_fields = ['host', 'username', 'password', 'dbname']
+    required_fields = ['host', 'username', 'password', 'dbname', 'engine']
 
     # Only do VersionId validation against the stage if a token is passed in
     if token:
@@ -366,11 +371,23 @@ def get_secret_dict(service_client, arn, stage, token=None):
     secret_dict = json.loads(plaintext)
 
     # Run validations against the secret
-    if 'engine' not in secret_dict or secret_dict['engine'] != 'oracle':
-        raise KeyError("Database engine must be set to 'oracle' in order to use this rotation lambda")
+    if master_secret and (set(secret_dict.keys()) == set(['username', 'password'])):
+        # If this is an RDS-made Master Secret, we can fetch `host` and other connection params
+        # from the DescribeDBInstances RDS API using the DB Instance ARN as a filter.
+        # The DB Instance ARN is fetched from the RDS-made Master Secret's System Tags.
+        db_instance_arn = fetch_instance_arn_from_system_tags(service_client, arn)
+        if db_instance_arn is not None:
+            secret_dict = get_connection_params_from_rds_api(secret_dict, db_instance_arn)
+            logger.info("setSecret: Successfully fetched connection params for Master Secret %s from DescribeDBInstances API." % arn)
+
+        # For non-RDS-made Master Secrets that are missing `host`, this will error below when checking for required connection params.
+
     for field in required_fields:
         if field not in secret_dict:
             raise KeyError("%s key is missing from secret JSON" % field)
+
+    if secret_dict['engine'] != 'oracle':
+        raise KeyError("Database engine must be set to 'oracle' in order to use this rotation lambda")
 
     # Parse and return the secret JSON string
     return secret_dict
@@ -439,3 +456,85 @@ def is_rds_replica_database(replica_dict, master_dict):
     # DB Instance identifiers are unique - can only be one result
     current_instance = instances[0]
     return master_instance_id == current_instance.get('ReadReplicaSourceDBInstanceIdentifier')
+
+
+def fetch_instance_arn_from_system_tags(service_client, secret_arn):
+    """Fetches DB Instance ARN from the given secret's metadata.
+
+    Fetches DB Instance ARN from the given secret's metadata.
+
+    Args:
+        service_client (client): The secrets manager service client
+
+        secret_arn (String): The secret ARN used in a DescribeSecrets API call to fetch the secret's metadata.
+
+    Returns:
+        db_instance_arn (String): The DB Instance ARN of the Primary RDS Instance
+
+    """
+
+    metadata = service_client.describe_secret(SecretId=secret_arn)
+    tags = metadata['Tags']
+
+    # Check if DB Instance ARN is present in secret Tags
+    db_instance_arn = None
+    for tag in tags:
+        if tag['Key'].lower() == 'aws:rds:primarydbinstancearn':
+            db_instance_arn = tag['Value']
+
+    # DB Instance ARN must be present in secret System Tags to use this work-around
+    if db_instance_arn is None:
+        logger.warning("setSecret: DB Instance ARN not present in Metadata System Tags for secret %s" % secret_arn)
+    elif len(db_instance_arn) > MAX_RDS_DB_INSTANCE_ARN_LENGTH:
+        logger.error("setSecret: %s is not a valid DB Instance ARN. It exceeds the maximum length of %d." % (db_instance_arn, MAX_RDS_DB_INSTANCE_ARN_LENGTH))
+        raise ValueError("%s is not a valid DB Instance ARN. It exceeds the maximum length of %d." % (db_instance_arn, MAX_RDS_DB_INSTANCE_ARN_LENGTH))
+
+    return db_instance_arn
+
+
+def get_connection_params_from_rds_api(master_dict, master_instance_arn):
+    """Fetches connection parameters (`host`, `port`, etc.) from the DescribeDBInstances RDS API using `master_instance_arn` in the master secret metadata as a filter.
+
+    This helper function fetches connection parameters from the DescribeDBInstances RDS API using `master_instance_arn` in the master secret metadata as a filter.
+
+    Args:
+        master_dict (dictionary): The master secret dictionary that will be updated with connection parameters.
+
+        master_instance_arn (string): The DB Instance ARN from master secret System Tags that will be used as a filter in DescribeDBInstances RDS API calls.
+
+    Returns:
+        master_dict (dictionary): An updated master secret dictionary that now contains connection parameters such as `host`, `port`, etc.
+
+    Raises:
+        Exception: If there is some error/throttling when calling the DescribeDBInstances RDS API
+
+        ValueError: If the DescribeDBInstances RDS API Response contains no Instances or more than 1 Instance
+    """
+    # Setup the client
+    rds_client = boto3.client('rds')
+
+    # Call DescribeDBInstances RDS API
+    try:
+        describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=master_instance_arn)
+    except Exception as err:
+        logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
+        raise Exception("Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
+
+    # Verify the instance was found
+    instances = describe_response['DBInstances']
+    if len(instances) == 0:
+        logger.error("setSecret: %s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_arn)
+        raise ValueError("%s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_arn)
+
+    # put connection parameters in master secret dictionary
+    primary_instance = instances[0]
+    master_dict['host'] = primary_instance['Endpoint']['Address']
+    master_dict['port'] = primary_instance['Endpoint']['Port']
+    master_dict['dbname'] = primary_instance['DBName']
+    master_dict['engine'] = primary_instance['Engine']
+
+    # simplify engine name to match `engine` Secret tag in the non-RDS-made Admin Secret flow
+    if master_dict['engine'] in ['oracle-ee', 'oracle-ee-cdb', 'oracle-se2', 'oracle-se2-cdb', 'custom-oracle-ee']:
+        master_dict['engine'] = 'oracle'
+
+    return master_dict
