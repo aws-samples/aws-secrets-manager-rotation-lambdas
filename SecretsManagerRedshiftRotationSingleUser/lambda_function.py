@@ -312,8 +312,8 @@ def get_connection(secret_dict):
             % (secret_dict["username"], secret_dict["host"])
         )
         return conn
-    except Exception as e:
-        logger.error(e)
+    except redshift_connector.Error as e:
+        logger.info("Redshift Connection attempt failed with:\n %s", e)
         return None
 
 
