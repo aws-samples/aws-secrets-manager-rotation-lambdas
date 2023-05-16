@@ -129,6 +129,9 @@ def test_secret(service_client, arn, token):
     is a database credential, this method should validate that the user can login with the password in AWSPENDING and that the user has
     all of the expected permissions against the database.
 
+    If the test fails, this function should raise an exception. (Any exception.)
+    If no exception is raised, the test is considered to have passed. (The return value is ignored.)
+
     Args:
         service_client (client): The secrets manager service client
 
