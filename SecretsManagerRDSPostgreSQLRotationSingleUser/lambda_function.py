@@ -429,7 +429,7 @@ def get_secret_dict(service_client, arn, stage, token=None):
     secret_dict = json.loads(plaintext)
 
     # Run validations against the secret
-    if 'engine' not in secret_dict or secret_dict['engine'] != 'postgres':
+    if 'engine' not in secret_dict or 'postgres' not in secret_dict['engine']:
         raise KeyError("Database engine must be set to 'postgres' in order to use this rotation lambda")
     for field in required_fields:
         if field not in secret_dict:
