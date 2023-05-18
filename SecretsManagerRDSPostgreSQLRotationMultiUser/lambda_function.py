@@ -467,7 +467,7 @@ def get_secret_dict(service_client, arn, stage, token=None, master_secret=False)
         if field not in secret_dict:
             raise KeyError("%s key is missing from secret JSON" % field)
 
-    if secret_dict['engine'] != 'postgres':
+    if 'postgres' not in secret_dict['engine']:
         raise KeyError("Database engine must be set to 'postgres' in order to use this rotation lambda")
 
     # Parse and return the secret JSON string
