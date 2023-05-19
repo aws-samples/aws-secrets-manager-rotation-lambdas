@@ -117,6 +117,10 @@ def create_secret(service_client, arn, token):
         get_secret_dict(service_client, arn, "AWSPENDING", token)
         logger.info("createSecret: Successfully retrieved secret for %s." % arn)
     except service_client.exceptions.ResourceNotFoundException:
+        # Preserve former username and password
+        current_dict['formerUsername'] = current_dict['username']
+        current_dict['formerPassword'] = current_dict['password']
+
         # Get the alternate username swapping between the original user and the user with _CLONE appended to it
         current_dict['username'] = get_alt_username(current_dict['username'])
 
