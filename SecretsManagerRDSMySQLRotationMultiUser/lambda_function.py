@@ -180,7 +180,16 @@ def set_secret(service_client, arn, token):
     if not conn:
         logger.error("setSecret: Unable to log into database using current credentials for secret %s" % arn)
         raise ValueError("Unable to log into database using current credentials for secret %s" % arn)
-    conn.close()
+    # get hostname of existing user used by rotation lambda
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT CURRENT_USER()")
+            current_user_fullname = cur.fetchone()[0]
+            # extract Host part of username, will be used to get current user configuration
+            user_hostname = current_user_fullname.split("@")[1]
+            logger.info("User hostname detected: [%s]", user_hostname)
+    finally:
+        conn.close()
 
     # Use the master arn from the current secret to fetch master secret contents
     master_arn = current_dict['masterarn']
@@ -200,41 +209,121 @@ def set_secret(service_client, arn, token):
     # Now set the password to the pending password
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT User FROM mysql.user WHERE User = %s", pending_dict['username'])
-            # Create the user if it does not exist
-            if cur.rowcount == 0:
-                cur.execute("CREATE USER %s IDENTIFIED BY %s", (pending_dict['username'], pending_dict['password']))
 
-            # Copy grants to the new user
-            cur.execute("SHOW GRANTS FOR %s", current_dict['username'])
-            for row in cur.fetchall():
-                grant = row[0].split(' TO ')
-                new_grant_escaped = grant[0].replace('%', '%%')  # % is a special character in Python format strings.
-                cur.execute(new_grant_escaped + " TO %s", (pending_dict['username'],))
+            # get grants of current user
+            cur.execute(
+                query="SHOW GRANTS FOR %s@%s",
+                args=(current_dict["username"], user_hostname),
+            )
+            current_user_grants = cur.fetchall()
+            # get grant-part of the statements
+            # % is a special character in Python format strings.
+            new_user_grants = [ grant[0].split(" TO ")[0].replace("%", "%%") for grant in current_user_grants ]
 
             # Get the version of MySQL
             cur.execute("SELECT VERSION()")
             ver = cur.fetchone()[0]
 
-            # Copy TLS options to the new user
+            # get TLS options to the current user
             escaped_encryption_statement = get_escaped_encryption_statement(ver)
-            cur.execute("SELECT ssl_type, ssl_cipher, x509_issuer, x509_subject FROM mysql.user WHERE User = %s", current_dict['username'])
+            cur.execute(
+                query="SELECT ssl_type, ssl_cipher, x509_issuer, x509_subject FROM mysql.user WHERE User = %s AND Host = %s",
+                args=(
+                    current_dict["username"],
+                    user_hostname,
+                ),
+            )
             tls_options = cur.fetchone()
-            ssl_type = tls_options[0]
-            if not ssl_type:
-                cur.execute(escaped_encryption_statement + " NONE", pending_dict['username'])
-            elif ssl_type == "ANY":
-                cur.execute(escaped_encryption_statement + " SSL", pending_dict['username'])
-            elif ssl_type == "X509":
-                cur.execute(escaped_encryption_statement + " X509", pending_dict['username'])
-            else:
-                cur.execute(escaped_encryption_statement + " CIPHER %s AND ISSUER %s AND SUBJECT %s", (pending_dict['username'], tls_options[1], tls_options[2], tls_options[3]))
 
-            # Set the password for the user and commit
-            password_option = get_password_option(ver)
-            cur.execute("SET PASSWORD FOR %s = " + password_option, (pending_dict['username'], pending_dict['password']))
-            conn.commit()
-            logger.info("setSecret: Successfully set password for %s in MySQL DB for secret arn %s." % (pending_dict['username'], arn))
+            # get all hosts of users matching current user
+            cur.execute(
+                query="SELECT Host FROM mysql.user WHERE User = %s",
+                args=(current_dict["username"]),
+            )
+            all_hosts_of_user = cur.fetchall()
+
+            # clone user for each existing Host value from mysql.user table
+            for host in all_hosts_of_user:
+                logger.info("Processing host %s", host)
+                # check if alterating user exists
+                cur.execute(
+                    query="SELECT User FROM mysql.user WHERE User = %s AND Host = %s",
+                    args=(pending_dict["username"], host),
+                )
+                # Create the user if it does not exist
+                if cur.rowcount == 0:
+                    cur.execute(
+                        query="CREATE USER %s@%s IDENTIFIED BY %s",
+                        args=(
+                            pending_dict["username"],
+                            host,
+                            pending_dict["password"],
+                        ),
+                    )
+
+                # Copy grants to the new user
+                for new_grant_escaped in new_user_grants:
+                    cur.execute(
+                        query=new_grant_escaped + " TO %s@%s",
+                        args=(pending_dict["username"], host),
+                    )
+                
+                # Copy TLS options
+                ssl_type = tls_options[0]
+                if not ssl_type:
+                    cur.execute(
+                        query=escaped_encryption_statement + " NONE",
+                        args=(
+                            pending_dict["username"],
+                            host,
+                        ),
+                    )
+                elif "ANY" == ssl_type:
+                    cur.execute(
+                        query=escaped_encryption_statement + " SSL",
+                        args=(
+                            pending_dict["username"],
+                            host,
+                        ),
+                    )
+                elif "X509" == ssl_type:
+                    cur.execute(
+                        query=escaped_encryption_statement + " X509",
+                        args=(
+                            pending_dict["username"],
+                            host,
+                        ),
+                    )
+                else:
+                    cur.execute(
+                        query=escaped_encryption_statement
+                        + " CIPHER %s AND ISSUER %s AND SUBJECT %s",
+                        args=(
+                            pending_dict["username"],
+                            host,
+                            tls_options[1],
+                            tls_options[2],
+                            tls_options[3],
+                        ),
+                    )
+
+                # Set the password for the user and commit
+                password_option = get_password_option(version=ver)
+                cur.execute(
+                    query="SET PASSWORD FOR %s@%s = " + password_option,
+                    args=(
+                        pending_dict["username"],
+                        host,
+                        pending_dict["password"],
+                    ),
+                )
+                conn.commit()
+                logger.info(
+                    "setSecret: Successfully set password for %s, host %s in MySQL DB for secret arn %s.",
+                    pending_dict["username"],
+                    host,
+                    arn,
+                )
     finally:
         conn.close()
 
@@ -535,9 +624,9 @@ def get_escaped_encryption_statement(version):
 
     """
     if version.startswith("5.6"):
-        return "GRANT USAGE ON *.* TO %s@'%%' REQUIRE"
+        return "GRANT USAGE ON *.* TO %s@%s REQUIRE"
     else:
-        return "ALTER USER %s@'%%' REQUIRE"
+        return "ALTER USER %s@%s REQUIRE"
 
 
 def is_rds_replica_database(replica_dict, master_dict):
