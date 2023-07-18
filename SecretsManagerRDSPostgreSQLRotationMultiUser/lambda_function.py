@@ -190,6 +190,9 @@ def set_secret(service_client, arn, token):
     master_arn = current_dict['masterarn']
     master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT", None, True)
 
+    # Fetch dbname from the Child User
+    master_dict['dbname'] = current_dict.get('dbname', None)
+
     if current_dict['host'] != master_dict['host'] and not is_rds_replica_database(current_dict, master_dict):
         # If current dict is a replica of the master dict, can proceed
         logger.error("setSecret: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
@@ -319,7 +322,7 @@ def get_connection(secret_dict):
     """
     # Parse and validate the secret JSON string
     port = int(secret_dict['port']) if 'port' in secret_dict else 5432
-    dbname = secret_dict['dbname'] if 'dbname' in secret_dict else "postgres"
+    dbname = secret_dict['dbname'] if secret_dict.get('dbname') is not None else "postgres"
 
     # Get SSL connectivity configuration
     use_ssl, fall_back = get_ssl_config(secret_dict)
@@ -454,8 +457,8 @@ def get_secret_dict(service_client, arn, stage, token=None, master_secret=False)
     # Run validations against the secret
     if master_secret and (set(secret_dict.keys()) == set(['username', 'password'])):
         # If this is an RDS-made Master Secret, we can fetch `host` and other connection params
-        # from the DescribeDBInstances RDS API using the DB Instance ARN as a filter.
-        # The DB Instance ARN is fetched from the RDS-made Master Secret's System Tags.
+        # from the DescribeDBInstances/DescribeDBClusters RDS API using the DB Instance/Cluster ARN as a filter.
+        # The DB Instance/Cluster ARN is fetched from the RDS-made Master Secret's System Tags.
         db_instance_arn = fetch_instance_arn_from_system_tags(service_client, arn)
         if db_instance_arn is not None:
             secret_dict = get_connection_params_from_rds_api(secret_dict, db_instance_arn)
@@ -540,9 +543,9 @@ def is_rds_replica_database(replica_dict, master_dict):
 
 
 def fetch_instance_arn_from_system_tags(service_client, secret_arn):
-    """Fetches DB Instance ARN from the given secret's metadata.
+    """Fetches DB Instance/Cluster ARN from the given secret's metadata.
 
-    Fetches DB Instance ARN from the given secret's metadata.
+    Fetches DB Instance/Cluster ARN from the given secret's metadata.
 
     Args:
         service_client (client): The secrets manager service client
@@ -550,20 +553,22 @@ def fetch_instance_arn_from_system_tags(service_client, secret_arn):
         secret_arn (String): The secret ARN used in a DescribeSecrets API call to fetch the secret's metadata.
 
     Returns:
-        db_instance_arn (String): The DB Instance ARN of the Primary RDS Instance
+        db_instance_arn (String): The DB Instance/Cluster ARN of the Primary RDS Instance
 
     """
 
     metadata = service_client.describe_secret(SecretId=secret_arn)
+    global ARN_SYSTEM_TAG
     tags = metadata['Tags']
 
-    # Check if DB Instance ARN is present in secret Tags
+    # Check if DB Instance/Cluster ARN is present in secret Tags
     db_instance_arn = None
     for tag in tags:
-        if tag['Key'].lower() == 'aws:rds:primarydbinstancearn':
+        if tag['Key'].lower() == 'aws:rds:primarydbinstancearn' or tag['Key'].lower() == 'aws:rds:primarydbclusterarn':
+            ARN_SYSTEM_TAG = tag['Key'].lower()
             db_instance_arn = tag['Value']
 
-    # DB Instance ARN must be present in secret System Tags to use this work-around
+    # DB Instance/Cluster ARN must be present in secret System Tags to use this work-around
     if db_instance_arn is None:
         logger.warning("setSecret: DB Instance ARN not present in Metadata System Tags for secret %s" % secret_arn)
     elif len(db_instance_arn) > MAX_RDS_DB_INSTANCE_ARN_LENGTH:
@@ -574,44 +579,62 @@ def fetch_instance_arn_from_system_tags(service_client, secret_arn):
 
 
 def get_connection_params_from_rds_api(master_dict, master_instance_arn):
-    """Fetches connection parameters (`host`, `port`, etc.) from the DescribeDBInstances RDS API using `master_instance_arn` in the master secret metadata as a filter.
+    """Fetches connection parameters (`host`, `port`, etc.) from the DescribeDBInstances/DescribeDBClusters RDS API using `master_instance_arn` in the master secret metadata as a filter.
 
-    This helper function fetches connection parameters from the DescribeDBInstances RDS API using `master_instance_arn` in the master secret metadata as a filter.
+    This helper function fetches connection parameters from the DescribeDBInstances/DescribeDBClusters RDS API using `master_instance_arn` in the master secret metadata as a filter.
 
     Args:
         master_dict (dictionary): The master secret dictionary that will be updated with connection parameters.
 
-        master_instance_arn (string): The DB Instance ARN from master secret System Tags that will be used as a filter in DescribeDBInstances RDS API calls.
+        master_instance_arn (string): The DB Instance/Cluster ARN from master secret System Tags that will be used as a filter in DescribeDBInstances/DescribeDBClusters RDS API calls.
 
     Returns:
         master_dict (dictionary): An updated master secret dictionary that now contains connection parameters such as `host`, `port`, etc.
 
     Raises:
-        Exception: If there is some error/throttling when calling the DescribeDBInstances RDS API
+        Exception: If there is some error/throttling when calling the DescribeDBInstances/DescribeDBClusters RDS API
 
-        ValueError: If the DescribeDBInstances RDS API Response contains no Instances or more than 1 Instance
+        ValueError: If the DescribeDBInstances/DescribeDBClusters RDS API Response contains no Instances
     """
     # Setup the client
     rds_client = boto3.client('rds')
 
-    # Call DescribeDBInstances RDS API
-    try:
-        describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=master_instance_arn)
-    except Exception as err:
-        logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
-        raise Exception("Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
+    if ARN_SYSTEM_TAG == 'aws:rds:primarydbinstancearn':
+        # Call DescribeDBInstances RDS API
+        try:
+            describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=master_instance_arn)
+        except Exception as err:
+            logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
+            raise Exception("Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
+        # Verify the instance was found
+        instances = describe_response['DBInstances']
+        if len(instances) == 0:
+            logger.error("setSecret: %s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_arn)
+            raise ValueError("%s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_arn)
 
-    # Verify the instance was found
-    instances = describe_response['DBInstances']
-    if len(instances) == 0:
-        logger.error("setSecret: %s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_arn)
-        raise ValueError("%s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_arn)
+        # put connection parameters in master secret dictionary
+        primary_instance = instances[0]
+        master_dict['host'] = primary_instance['Endpoint']['Address']
+        master_dict['port'] = primary_instance['Endpoint']['Port']
+        master_dict['engine'] = primary_instance['Engine']
 
-    # put connection parameters in master secret dictionary
-    primary_instance = instances[0]
-    master_dict['host'] = primary_instance['Endpoint']['Address']
-    master_dict['port'] = primary_instance['Endpoint']['Port']
-    master_dict['dbname'] = primary_instance.get('DBName', None)  # `DBName` doesn't have to be present.
-    master_dict['engine'] = primary_instance['Engine']
+    elif ARN_SYSTEM_TAG == 'aws:rds:primarydbclusterarn':
+        # Call DescribeDBClusters RDS API
+        try:
+            describe_response = rds_client.describe_db_clusters(DBClusterIdentifier=master_instance_arn)
+        except Exception as err:
+            logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBClusters RDS API: %s" % err)
+            raise Exception("Encountered API error while fetching connection parameters from DescribeDBClusters RDS API: %s" % err)
+        # Verify the instance was found
+        instances = describe_response['DBClusters']
+        if len(instances) == 0:
+            logger.error("setSecret: %s is not a valid DB Cluster ARN. No Instances found when using DescribeDBClusters RDS API to get connection params." % master_instance_arn)
+            raise ValueError("%s is not a valid DB Cluster ARN. No Instances found when using DescribeDBClusters RDS API to get connection params." % master_instance_arn)
+
+        # put connection parameters in master secret dictionary
+        primary_instance = instances[0]
+        master_dict['host'] = primary_instance['Endpoint']
+        master_dict['port'] = primary_instance['Port']
+        master_dict['engine'] = primary_instance['Engine']
 
     return master_dict
