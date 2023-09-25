@@ -186,6 +186,10 @@ def set_secret(service_client, arn, token):
     master_arn = current_dict['masterarn']
     master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT", None, True)
 
+    # Fetch dbname from the Child User
+    if current_dict.get('dbname') is not None:
+        master_dict['dbname'] = current_dict.get('dbname')
+
     if current_dict['host'] != master_dict['host'] and not is_rds_replica_database(current_dict, master_dict):
         # If current dict is a replica of the master dict, can proceed
         logger.error("setSecret: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
@@ -370,6 +374,10 @@ def get_secret_dict(service_client, arn, stage, token=None, master_secret=False)
     plaintext = secret['SecretString']
     secret_dict = json.loads(plaintext)
 
+    # `dbname` is not required for Master Secrets because it will be fetched from the Child Secret in that case.
+    if master_secret:
+        required_fields.remove('dbname')
+
     # Run validations against the secret
     if master_secret and (set(secret_dict.keys()) == set(['username', 'password'])):
         # If this is an RDS-made Master Secret, we can fetch `host` and other connection params
@@ -474,6 +482,11 @@ def fetch_instance_arn_from_system_tags(service_client, secret_arn):
     """
 
     metadata = service_client.describe_secret(SecretId=secret_arn)
+
+    if 'Tags' not in metadata:
+        logger.warning("setSecret: The secret %s is not a service-linked secret, so it does not have a tag aws:rds:primarydbinstancearn" % secret_arn)
+        return None
+
     tags = metadata['Tags']
 
     # Check if DB Instance ARN is present in secret Tags
@@ -530,7 +543,6 @@ def get_connection_params_from_rds_api(master_dict, master_instance_arn):
     primary_instance = instances[0]
     master_dict['host'] = primary_instance['Endpoint']['Address']
     master_dict['port'] = primary_instance['Endpoint']['Port']
-    master_dict['dbname'] = primary_instance['DBName']
     master_dict['engine'] = primary_instance['Engine']
 
     # simplify engine name to match `engine` Secret tag in the non-RDS-made Admin Secret flow
