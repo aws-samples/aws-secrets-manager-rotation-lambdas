@@ -559,10 +559,15 @@ def fetch_instance_arn_from_system_tags(service_client, secret_arn):
     """
 
     metadata = service_client.describe_secret(SecretId=secret_arn)
-    global ARN_SYSTEM_TAG
+
+    if 'Tags' not in metadata:
+        logger.warning("setSecret: The secret %s is not a service-linked secret, so it does not have a tag aws:rds:primarydbinstancearn or a tag aws:rds:primarydbclusterarn" % secret_arn)
+        return None
+
     tags = metadata['Tags']
 
     # Check if DB Instance/Cluster ARN is present in secret Tags
+    global ARN_SYSTEM_TAG
     db_instance_arn = None
     for tag in tags:
         if tag['Key'].lower() == 'aws:rds:primarydbinstancearn' or tag['Key'].lower() == 'aws:rds:primarydbclusterarn':
