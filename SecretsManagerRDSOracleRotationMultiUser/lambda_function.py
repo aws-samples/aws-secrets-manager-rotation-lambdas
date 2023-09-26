@@ -230,8 +230,10 @@ def set_secret(service_client, arn, token):
                             username=current_dict['username'].upper())
                 results = cur.fetchall()
                 for row in results:
-                    sql = row[0].read().strip(' \n\t').replace("%s" % escaped_current, "%s" % escaped_username)
-                    cur.execute(sql)
+                    # fetch and run all individual SQL commands needed to copy permissions to the new clone user
+                    sql_commands = row[0].read().strip(' \n\t').replace("%s" % escaped_current, "%s" % escaped_username)
+                    for sql_command in sql_commands.split('\n'):
+                        cur.execute(sql_command)
             except cx_Oracle.DatabaseError:
                 # If we were unable to find any grants skip this type
                 pass
