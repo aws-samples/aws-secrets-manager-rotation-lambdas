@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 registry_repo="$1"
 
 for row in $(cat images.json | jq -r '.folders[] | @base64'); do

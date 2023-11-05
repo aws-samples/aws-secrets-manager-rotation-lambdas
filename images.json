@@ -6,12 +6,12 @@
   "folders": [
     {
       "folder": "SecretsManagerRDSPostgreSQLRotationSingleUser",
-      "required_packages": "postgresql-libs",
+      "required_packages": "gcc postgresql postgresql-libs postgresql-devel",
       "tag": "postgres-single-user"
     },
     {
       "folder": "SecretsManagerRDSPostgreSQLRotationMultiUser",
-      "required_packages": "postgresql-libs",
+      "required_packages": "gcc postgresql postgresql-libs postgresql-devel",
       "tag": "postgres-multi-user"
     },
     {
