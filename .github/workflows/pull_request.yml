@@ -1,0 +1,17 @@
+name: PR workflow
+on: pull_request
+jobs:
+  build-images:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v2
+      - uses: docker/setup-buildx-action@v2
+      - name: Build and Push Images to local registry
+        run: |
+          local_registry_port=5555
+
+          docker run -d -p $local_registry_port:5000 --rm --name registry registry:2
+
+          ./build-images.sh localhost:$local_registry_port/${{ github.repository }}

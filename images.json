@@ -1,0 +1,28 @@
+{
+  "push_to_repos": [
+    "ghcr.io/jericop/aws-secrets-manager-rotation-lambda",
+    "jericop/aws-secrets-manager-rotation-lambda"
+  ],
+  "folders": [
+    {
+      "folder": "SecretsManagerRDSPostgreSQLRotationSingleUser",
+      "required_packages": "postgresql-libs",
+      "tag": "postgres-single-user"
+    },
+    {
+      "folder": "SecretsManagerRDSPostgreSQLRotationMultiUser",
+      "required_packages": "postgresql-libs",
+      "tag": "postgres-multi-user"
+    },
+    {
+      "folder": "SecretsManagerRDSMySQLRotationSingleUser",
+      "required_packages": "mariadb-libs",
+      "tag": "mysql-single-user"
+    },
+    {
+      "folder": "SecretsManagerRDSMySQLRotationMultiUser",
+      "required_packages": "mariadb-libs",
+      "tag": "mysql-multi-user"
+    }
+  ]
+}

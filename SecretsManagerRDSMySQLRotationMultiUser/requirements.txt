@@ -1,0 +1,3 @@
+# https://docs.aws.amazon.com/secretsmanager/latest/userguide/reference_available-rotation-templates.html#RDS_rotation_templates
+
+PyMySQL==1.0.2

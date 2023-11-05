@@ -1,0 +1,3 @@
+# https://docs.aws.amazon.com/secretsmanager/latest/userguide/reference_available-rotation-templates.html#RDS_rotation_templates
+
+PyGreSQL==5.0.7
