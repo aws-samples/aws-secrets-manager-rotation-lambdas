@@ -28,6 +28,7 @@ def lambda_handler(event, context):
         'password': <required: password>,
         'dbname': <optional: database name, default to 'postgres'>,
         'port': <optional: if not specified, default port 5432 will be used>
+        'masterarn': <required: the arn of the master secret which will be used to create user>
     }
 
     Args:
@@ -153,6 +154,9 @@ def set_secret(service_client, arn, token):
         previous_dict = None
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+
+    if create_user_if_not_exists(service_client, current_dict, pending_dict):
+        return
 
     # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
@@ -437,3 +441,103 @@ def get_secret_dict(service_client, arn, stage, token=None):
 
     # Parse and return the secret JSON string
     return secret_dict
+
+def is_rds_replica_database(replica_dict, master_dict):
+    """Validates that the database of a secret is a replica of the database of the master secret
+
+    This helper function validates that the database of a secret is a replica of the database of the master secret.
+
+    Args:
+        replica_dict (dictionary): The secret dictionary containing the replica database
+
+        primary_dict (dictionary): The secret dictionary containing the primary database
+
+    Returns:
+        isReplica : whether or not the database is a replica
+
+    Raises:
+        ValueError: If the new username length would exceed the maximum allowed
+    """
+    # Setup the client
+    rds_client = boto3.client('rds')
+
+    # Get instance identifiers from endpoints
+    replica_instance_id = replica_dict['host'].split(".")[0]
+    master_instance_id = master_dict['host'].split(".")[0]
+
+    try:
+        describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=replica_instance_id)
+    except Exception as err:
+        logger.warning("Encountered error while verifying rds replica status: %s" % err)
+        return False
+    instances = describe_response['DBInstances']
+
+    # Host from current secret cannot be found
+    if not instances:
+        logger.info("Cannot verify replica status - no RDS instance found with identifier: %s" % replica_instance_id)
+        return False
+
+    # DB Instance identifiers are unique - can only be one result
+    current_instance = instances[0]
+    return master_instance_id == current_instance.get('ReadReplicaSourceDBInstanceIdentifier')
+
+def create_user_if_not_exists(service_client, current_dict, pending_dict):
+    """Creates the user if masterarn is supplied and the user does not exist in database.
+
+    This function creates the user if masterarn is supplied and the user does not exist in database.
+
+    Args:
+        service_client (client): The secrets manager service client
+
+        current_dict (dictionary): The current secret dictionary
+
+        pending_dict (dictionary): The pending secret dictionary
+
+    Returns:
+        wasCreated (bool) : whether or not the database user was created
+
+    Raises:
+        ValueError: If the new username length would exceed the maximum allowed
+    """
+    user_created = False
+
+    # If masterarn has been given, check if the user exists and create if not.
+    if current_dict.get('masterarn'):
+        # Use the master arn from the current secret to fetch master secret contents
+        master_arn = current_dict['masterarn']
+        master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT", None, True)
+
+        # Fetch dbname from the Child User
+        master_dict['dbname'] = current_dict.get('dbname', None)
+
+        if current_dict['host'] != master_dict['host'] and not is_rds_replica_database(current_dict, master_dict):
+            # If current dict is a replica of the master dict, can proceed
+            logger.error("setSecret: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
+            raise ValueError("Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
+
+        # Now log into the database with the master credentials
+        conn = get_connection(master_dict)
+        if not conn:
+            logger.error("setSecret: Unable to log into database using credentials in master secret %s" % master_arn)
+            raise ValueError("Unable to log into database using credentials in master secret %s" % master_arn)
+
+        try:
+            with conn.cursor() as cur:
+                # Get escaped username via quote_ident
+                cur.execute("SELECT quote_ident(%s)", (pending_dict['username'],))
+                pending_username = cur.fetchone()[0]
+
+                # Check if the user exists, if not create it and grant connect to the database
+                # This default permission can be revoked or modified after the user has been created.
+                cur.execute("SELECT 1 FROM pg_roles where rolname = %s", (pending_dict['username'],))
+                if len(cur.fetchall()) == 0:
+                    cur.execute("CREATE ROLE %s WITH LOGIN PASSWORD %s", (pending_username, pending_dict['password'],))
+                    cur.execute("GRANT CONNECT ON DATABASE %s TO %s" % (current_dict['dbname'], pending_username))
+                    user_created = True
+
+                conn.commit()
+                logger.info("setSecret: Successfully created user %s in PostgreSQL DB %s." % (pending_dict['username'], current_dict['dbname']))
+        finally:
+            conn.close()
+
+    return user_created
