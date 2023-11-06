@@ -13,12 +13,12 @@
       "tag": "elasticache-single-user"
     },
     {
-      "folder": "SecretsManagerRDSMongoDBRotationSingleUser",
+      "folder": "SecretsManagerMongoDBRotationSingleUser",
       "python_packages": "Pymongo==3.2",
       "tag": "mongodb-single-user"
     },
     {
-      "folder": "SecretsManagerRDSMongoDBRotationMultiUser",
+      "folder": "SecretsManagerMongoDBRotationMultiUser",
       "python_packages": "Pymongo==3.2",
       "tag": "mongodb-multi-user"
     },
