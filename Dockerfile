@@ -1,14 +1,13 @@
 FROM public.ecr.aws/lambda/python:3.11
 
-ARG packages
+ARG system_packages
+ARG python_packages
 
-RUN yum update -y && yum install -y $packages
+# Install system package (if required). jq returns 'null' for keys not present
+RUN if [[ ! -z "$system_packages" && "$system_packages" != "null" ]]; then yum install -y $system_packages; fi
 
-# Copy requirements.txt
-COPY requirements.txt ${LAMBDA_TASK_ROOT}
-
-# Install the specified packages
-RUN pip install -r requirements.txt
+# Install python packages (if required). jq returns 'null' for keys not present
+RUN if [[ ! -z "$python_packages" && "$python_packages" != "null" ]]; then pip install $python_packages; fi
 
 # Copy function code
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}

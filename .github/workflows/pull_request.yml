@@ -8,10 +8,8 @@ jobs:
         uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v2
       - uses: docker/setup-buildx-action@v2
-      - name: Build and Push Images to local registry
+      - name: Build images
         run: |
-          local_registry_port=5555
+          set -x
 
-          docker run -d -p $local_registry_port:5000 --rm --name registry registry:2
-
-          ./build-images.sh localhost:$local_registry_port/${{ github.repository }}
+          ./build-images.sh 
