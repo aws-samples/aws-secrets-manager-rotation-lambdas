@@ -24,10 +24,9 @@ for row in $(cat images.json | jq -r '.folders[] | @base64'); do
   
   cp Dockerfile $folder
   
-  docker buildx build \
+  docker build \
     --build-arg "system_packages=$system_packages" \
     --build-arg "python_packages=$python_packages" \
-    --platform linux/amd64,linux/arm64 \
     --tag "$registry_repo:$tag" $docker_push_arg \
     $folder
   
