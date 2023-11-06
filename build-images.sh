@@ -1,8 +1,16 @@
 #!/bin/bash
 
 set -euo pipefail
+set -x
 
-registry_repo="$1"
+registry_repo="${1:-ignored-not-pushed}"
+
+docker_push_arg="--push"
+
+# Remove push flag if registry_repo was not specified
+if [[ "$registry_repo" == "ignored-not-pushed" ]] ; then
+  docker_push_arg=""
+fi
 
 for row in $(cat images.json | jq -r '.folders[] | @base64'); do
   _jq() {
@@ -20,8 +28,8 @@ for row in $(cat images.json | jq -r '.folders[] | @base64'); do
     --build-arg "system_packages=$system_packages" \
     --build-arg "python_packages=$python_packages" \
     --platform linux/amd64,linux/arm64 \
-    --tag "$registry_repo:$tag" \
-    --push  $folder 
+    --tag "$registry_repo:$tag" $docker_push_arg \
+    $folder
   
   rm $folder/Dockerfile
   
