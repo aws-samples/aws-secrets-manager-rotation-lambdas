@@ -81,16 +81,6 @@
       "install_system_packages": "gcc postgresql postgresql-libs postgresql-devel",
       "python_packages": "PyGreSQL==5.0.7",
       "tag": "redshift-multi-user"
-    },
-    {
-      "folder": "SecretsManagerRDSSQLServerRotationSingleUser",
-      "python_packages": "Pymssql==2.2.2",
-      "tag": "sqlserver-single-user"
-    },
-    {
-      "folder": "SecretsManagerRDSSQLServerRotationMultiUser",
-      "python_packages": "Pymssql==2.2.2",
-      "tag": "sqlserver-multi-user"
     }
   ]
 }
