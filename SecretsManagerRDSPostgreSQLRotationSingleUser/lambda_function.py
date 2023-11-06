@@ -156,8 +156,7 @@ def set_secret(service_client, arn, token):
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
 
-    if create_user_if_not_exists(service_client, current_dict, pending_dict):
-        return
+    create_user_if_not_exists(service_client, current_dict, pending_dict)
 
     # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
@@ -644,19 +643,19 @@ def create_user_if_not_exists(service_client, current_dict, pending_dict):
         try:
             with conn.cursor() as cur:
                 # Get escaped username via quote_ident
-                cur.execute("SELECT quote_ident(%s)", (pending_dict['username'],))
-                pending_username = cur.fetchone()[0]
+                cur.execute("SELECT quote_ident(%s)", (current_dict['username'],))
+                current_username = cur.fetchone()[0]
 
                 # Check if the user exists, if not create it and grant connect to the database
                 # This default permission can be revoked or modified after the user has been created.
-                cur.execute("SELECT 1 FROM pg_roles where rolname = %s", (pending_dict['username'],))
+                cur.execute("SELECT 1 FROM pg_roles where rolname = %s", (current_dict['username'],))
                 if len(cur.fetchall()) == 0:
-                    cur.execute("CREATE ROLE %s WITH LOGIN PASSWORD %s", (pending_username, pending_dict['password'],))
-                    cur.execute("GRANT CONNECT ON DATABASE %s TO %s" % (current_dict['dbname'], pending_username))
+                    cur.execute("CREATE ROLE %s WITH LOGIN PASSWORD %s", (current_username, current_dict['password'],))
+                    cur.execute("GRANT CONNECT ON DATABASE %s TO %s" % (current_dict['dbname'], current_username))
                     user_created = True
 
                 conn.commit()
-                logger.info("setSecret: Successfully created user %s in PostgreSQL DB %s." % (pending_dict['username'], current_dict['dbname']))
+                logger.info("setSecret: Successfully created user %s in PostgreSQL DB %s." % (current_username, current_dict['dbname']))
         finally:
             conn.close()
 
