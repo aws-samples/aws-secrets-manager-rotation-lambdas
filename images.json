@@ -5,24 +5,92 @@
   ],
   "folders": [
     {
-      "folder": "SecretsManagerRDSPostgreSQLRotationSingleUser",
-      "required_packages": "gcc postgresql postgresql-libs postgresql-devel",
-      "tag": "postgres-single-user"
+      "folder": "SecretsManagerActiveDirectoryRotationSingleUser",
+      "tag": "active-directory-single-user"
     },
     {
-      "folder": "SecretsManagerRDSPostgreSQLRotationMultiUser",
-      "required_packages": "gcc postgresql postgresql-libs postgresql-devel",
-      "tag": "postgres-multi-user"
+      "folder": "SecretsManagerElasticacheUserRotation",
+      "tag": "elasticache-single-user"
+    },
+    {
+      "folder": "SecretsManagerRDSMongoDBRotationSingleUser",
+      "python_packages": "Pymongo==3.2",
+      "tag": "mongodb-single-user"
+    },
+    {
+      "folder": "SecretsManagerRDSMongoDBRotationMultiUser",
+      "python_packages": "Pymongo==3.2",
+      "tag": "mongodb-multi-user"
+    },
+    {
+      "folder": "SecretsManagerRDSMariaDBRotationSingleUser",
+      "install_system_packages": "mariadb-libs",
+      "python_packages": "PyMySQL==1.0.2",
+      "tag": "mariadb-single-user"
+    },
+    {
+      "folder": "SecretsManagerRDSMariaDBRotationMultiUser",
+      "install_system_packages": "mariadb-libs",
+      "python_packages": "PyMySQL==1.0.2",
+      "tag": "mariadb-multi-user"
     },
     {
       "folder": "SecretsManagerRDSMySQLRotationSingleUser",
-      "required_packages": "mariadb-libs",
+      "install_system_packages": "mariadb-libs",
+      "python_packages": "PyMySQL==1.0.2",
       "tag": "mysql-single-user"
     },
     {
       "folder": "SecretsManagerRDSMySQLRotationMultiUser",
-      "required_packages": "mariadb-libs",
+      "install_system_packages": "mariadb-libs",
+      "python_packages": "PyMySQL==1.0.2",
       "tag": "mysql-multi-user"
+    },
+    {
+      "folder": "SecretsManagerRDSOracleRotationSingleUser",
+      "install_system_packages": "gcc",
+      "python_packages": "cx_Oracle==6.0.2",
+      "tag": "oracle-single-user"
+    },
+    {
+      "folder": "SecretsManagerRDSOracleRotationMultiUser",
+      "install_system_packages": "gcc",
+      "python_packages": "cx_Oracle==6.0.2",
+      "tag": "oracle-multi-user"
+    },
+    {
+      "folder": "SecretsManagerRDSPostgreSQLRotationSingleUser",
+      "install_system_packages": "gcc postgresql postgresql-libs postgresql-devel",
+      "python_packages": "PyGreSQL==5.0.7",
+      "tag": "postgres-single-user"
+    },
+    {
+      "folder": "SecretsManagerRDSPostgreSQLRotationMultiUser",
+      "install_system_packages": "gcc postgresql postgresql-libs postgresql-devel",
+      "python_packages": "PyGreSQL==5.0.7",
+      "tag": "postgres-multi-user"
+    },
+    {
+      "folder": "SecretsManagerRedshiftRotationSingleUser",
+      "install_system_packages": "gcc postgresql postgresql-libs postgresql-devel",
+      "python_packages": "PyGreSQL==5.0.7",
+      "tag": "redshift-single-user"
+    },
+    {
+      "folder": "SecretsManagerRedshiftRotationMultiUser",
+      "install_system_packages": "gcc postgresql postgresql-libs postgresql-devel",
+      "python_packages": "PyGreSQL==5.0.7",
+      "tag": "redshift-multi-user"
+    },
+    {
+      "folder": "SecretsManagerRDSSQLServerRotationSingleUser",
+      "python_packages": "Pymssql==2.2.2",
+      "tag": "sqlserver-single-user"
+    },
+    {
+      "folder": "SecretsManagerRDSSQLServerRotationMultiUser",
+      "python_packages": "Pymssql==2.2.2",
+      "tag": "sqlserver-multi-user"
     }
   ]
 }
