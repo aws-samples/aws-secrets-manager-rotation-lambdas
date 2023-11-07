@@ -589,6 +589,7 @@ def get_connection_params_from_rds_api(master_dict, master_instance_arn):
 
         # put connection parameters in master secret dictionary
         primary_instance = instances[0]
+        logger.info("primary_instance: %r" % primary_instance)
         master_dict['host'] = primary_instance['Endpoint']['Address']
         master_dict['port'] = primary_instance['Endpoint']['Port']
         master_dict['engine'] = primary_instance['Engine']
