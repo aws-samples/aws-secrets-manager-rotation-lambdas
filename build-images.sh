@@ -13,6 +13,12 @@ if [[ "$registry_repo" == "$default_not_pushed_repo" ]] ; then
   registry_repo_cache="ghcr.io/jericop/$(basename $(pwd))-buildx-cache"
 fi
 
+buildx_builder=container
+
+# Create buildx builder with access to host network (if not already created)
+docker buildx use $buildx_builder > /dev/null 2>&1 || \
+  docker buildx create --name $buildx_builder --driver docker-container --driver-opt network=host --use
+
 for row in $(cat images.json | jq -r '.folders[] | @base64'); do
   _jq() {
     echo ${row} | base64 --decode | jq -r ${1}
