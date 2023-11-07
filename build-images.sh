@@ -8,17 +8,11 @@ default_not_pushed_repo=ignored-not-pushed/some-repo
 registry_repo="${1:-$default_not_pushed_repo}"
 registry_hostname=$(cut -d/ -f1 <<< $registry_repo)
 repo_name=$(cut -d/ -f2- <<< $registry_repo)
-registry_repo_cache="ghcr.io/$repo_name-buildx-cache"
+registry_repo_cache="ghcr.io/$repo_name-pack-cache"
 
 if [[ "$registry_repo" == "$default_not_pushed_repo" || "$registry_hostname" != "ghcr.io" ]] ; then
-  registry_repo_cache="ghcr.io/jericop/$(basename $(pwd))-buildx-cache"
+  registry_repo_cache="ghcr.io/jericop/$(basename $(pwd))-pack-cache"
 fi
-
-buildx_builder=container
-
-# Create buildx builder with access to host network (if not already created)
-docker buildx use $buildx_builder > /dev/null 2>&1 || \
-  docker buildx create --name $buildx_builder --driver docker-container --driver-opt network=host --use
 
 for row in $(cat images.json | jq -r '.folders[] | @base64'); do
   _jq() {
@@ -30,26 +24,31 @@ for row in $(cat images.json | jq -r '.folders[] | @base64'); do
   python_packages=$(_jq '.python_packages')         # returns 'null' if key is not present
   tag=$(_jq '.tag')
   
-  cp Dockerfile $folder
+  if [[ "$python_packages" != "null" ]]; then
+    echo $python_packages | xargs -n1 > $folder/requirements.txt
+  fi
 
-  docker_push_arg="--push"
+  # This will set the entrypoint for the lambda container image
+  echo "web: python -m awslambdaric lambda_function.lambda_handler" > $folder/Procfile
 
-  docker_cache_to_arg="--cache-to type=registry,ref=$registry_repo_cache:$tag,mode=max"
-  docker_cache_from_arg="--cache-from type=registry,ref=$registry_repo_cache:$tag"
-  docker_cache_args="$docker_cache_to_arg $docker_cache_from_arg"
+  pack_publish_arg="--publish"
 
   if [[ "$registry_repo" == "$default_not_pushed_repo" ]] ; then
-    docker_push_arg=""
-    docker_cache_args="$docker_cache_from_arg"
+    pack_publish_arg=""
   fi
   
-  docker build \
-    --builder $buildx_builder \
-    --build-arg "system_packages=$system_packages" \
-    --build-arg "python_packages=$python_packages" \
-    --tag "$registry_repo:$tag" $docker_push_arg $docker_cache_args \
-    $folder
-  
-  rm $folder/Dockerfile
+  pack build "$registry_repo:$tag" \
+    --cache-image $registry_repo_cache:$tag \
+    --network host \
+    --builder paketobuildpacks/builder-jammy-full \
+    --pull-policy if-not-present \
+    $pack_publish_arg --path $folder
+
+  if [[ -f $folder/requirements.txt ]]; then
+    rm $folder/requirements.txt
+  fi
+  if [[ -f $folder/Procfile ]]; then
+    rm $folder/Procfile
+  fi
   
 done

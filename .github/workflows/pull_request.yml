@@ -12,4 +12,6 @@ jobs:
         run: |
           set -x
 
-          ./build-images.sh 
+          for registry_repo in $(cat images.json | jq -r '.push_to_repos | .[]'); do
+            ./build-images.sh $registry_repo
+          done
