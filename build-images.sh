@@ -33,8 +33,8 @@ for row in $(cat images.json | jq -r '.folders[] | @base64'); do
 
   docker_push_arg="--push"
 
-  docker_cache_to_arg="--cache-to type=registry,ref=$registry_repo_cache,mode=max"
-  docker_cache_from_arg="--cache-from type=registry,ref=$registry_repo_cache"
+  docker_cache_to_arg="--cache-to type=registry,ref=$registry_repo_cache:$tag,mode=max"
+  docker_cache_from_arg="--cache-from type=registry,ref=$registry_repo_cache:$tag"
   docker_cache_args="$docker_cache_to_arg $docker_cache_from_arg"
 
   if [[ "$registry_repo" == "$default_not_pushed_repo" ]] ; then
