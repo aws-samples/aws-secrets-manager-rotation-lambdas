@@ -6,12 +6,8 @@ set -x
 default_not_pushed_repo=ignored-not-pushed/some-repo
 
 registry_repo="${1:-$default_not_pushed_repo}"
-repo_name=$(cut -d/ -f2- <<< $registry_repo)
-registry_repo_cache="ghcr.io/$repo_name-buildx-cache"
 
-if [[ "$registry_repo" == "$default_not_pushed_repo" ]] ; then
-  registry_repo_cache="ghcr.io/jericop/$(basename $(pwd))-buildx-cache"
-fi
+registry_repo_cache="ghcr.io/jericop/$(basename $(pwd))-buildx-cache"
 
 buildx_builder=container
 
