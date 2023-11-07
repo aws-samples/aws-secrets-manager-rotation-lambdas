@@ -52,7 +52,10 @@ def lambda_handler(event, context):
     token = event['ClientRequestToken']
     step = event['Step']
 
-    logger.info("event %s", event)
+    logger.info("event (s) %s", event)
+    logger.info("event (r) %r", event)
+    logger.info("context (s) %s", context)
+    logger.info("context (r) %r", context)
 
     # Setup the client
     service_client = boto3.client('secretsmanager', endpoint_url=os.environ['SECRETS_MANAGER_ENDPOINT'])
@@ -313,9 +316,11 @@ def get_connection(secret_dict):
 
     # if an 'ssl' key is not found or does not contain a valid value, attempt an SSL connection and fall back to non-SSL on failure
     conn = connect_and_authenticate(secret_dict, port, dbname, use_ssl)
+    logger.info("(use_ssl) conn %r" % conn)
     if conn or not fall_back:
         return conn
     else:
+        logger.info("falling back to connect_and_authenticate")
         return connect_and_authenticate(secret_dict, port, dbname, False)
 
 
@@ -398,6 +403,8 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
             logger.error("Hostname verification failed when estlablishing SSL/TLS Handshake with host: %s" % secret_dict['host'])
         elif re.search('no pg_hba.conf entry for host ".+", SSL off', e.args[0]):
             logger.error("Unable to establish SSL/TLS handshake, SSL/TLS is enforced on the host: %s" % secret_dict['host'])
+        else:
+            logger.error("pg.InternalError: %r" % e)
         return None
 
 
@@ -633,14 +640,13 @@ def create_user_if_not_exists(service_client, current_dict, pending_dict):
 
         if current_dict['host'] != master_dict['host'] and not is_rds_replica_database(current_dict, master_dict):
             # If current dict is a replica of the master dict, can proceed
-            logger.error("setSecret: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
+            logger.error("create_user_if_not_exists: Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
             raise ValueError("Current database host %s is not the same host as/rds replica of master %s" % (current_dict['host'], master_dict['host']))
 
         # Now log into the database with the master credentials
         conn = get_connection(master_dict)
         if not conn:
-            logger.error("setSecret: Unable to log into database using credentials in master secret %s" % master_arn)
-            logger.error(master_dict)
+            logger.error("create_user_if_not_exists: Unable to log into database using credentials in master secret %s" % master_arn)
             raise ValueError("Unable to log into database using credentials in master secret %s" % master_arn)
 
         try:
@@ -658,7 +664,7 @@ def create_user_if_not_exists(service_client, current_dict, pending_dict):
                     user_created = True
 
                 conn.commit()
-                logger.info("setSecret: Successfully created user %s in PostgreSQL DB %s." % (current_username, current_dict['dbname']))
+                logger.info("create_user_if_not_exists: Successfully created user %s in PostgreSQL DB %s." % (current_username, current_dict['dbname']))
         finally:
             conn.close()
 
