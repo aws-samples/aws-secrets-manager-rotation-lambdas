@@ -12,4 +12,6 @@ jobs:
         run: |
           set -x
 
+          docker buildx create --name=container --driver=docker-container --driver-opt network=host --use
+
           ./build-images.sh 

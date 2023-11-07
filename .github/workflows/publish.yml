@@ -23,6 +23,8 @@ jobs:
         run: |
           set -x
 
+          docker buildx create --name=container --driver=docker-container --driver-opt network=host --use
+
           for registry_repo in $(cat images.json | jq -r '.push_to_repos | .[]'); do
             ./build-images.sh $registry_repo
           done
