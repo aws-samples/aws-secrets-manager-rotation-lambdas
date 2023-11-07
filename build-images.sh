@@ -43,6 +43,7 @@ for row in $(cat images.json | jq -r '.folders[] | @base64'); do
   fi
   
   docker build \
+    --builder $buildx_builder \
     --build-arg "system_packages=$system_packages" \
     --build-arg "python_packages=$python_packages" \
     --tag "$registry_repo:$tag" $docker_push_arg $docker_cache_args \
