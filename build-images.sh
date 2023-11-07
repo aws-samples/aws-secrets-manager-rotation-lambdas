@@ -3,7 +3,15 @@
 set -euo pipefail
 set -x
 
-registry_repo="${1:-ignored-not-pushed}"
+default_not_pushed_repo=ignored-not-pushed/some-repo
+
+registry_repo="${1:-$default_not_pushed_repo}"
+repo_name=$(cut -d/ -f2- <<< $registry_repo)
+registry_repo_cache="ghcr.io/$repo_name-buildx-cache"
+
+if [[ "$registry_repo" == "$default_not_pushed_repo" ]] ; then
+  registry_repo_cache="ghcr.io/jericop/$(basename $(pwd))-buildx-cache"
+fi
 
 for row in $(cat images.json | jq -r '.folders[] | @base64'); do
   _jq() {
@@ -17,14 +25,13 @@ for row in $(cat images.json | jq -r '.folders[] | @base64'); do
   
   cp Dockerfile $folder
 
-  registry_repo_cache="$registry_repo-buildx-cache"
-
   docker_push_arg="--push"
+
   docker_cache_to_arg="--cache-to type=registry,ref=$registry_repo_cache,mode=max"
   docker_cache_from_arg="--cache-from type=registry,ref=$registry_repo_cache"
   docker_cache_args="$docker_cache_to_arg $docker_cache_from_arg"
 
-  if [[ "$registry_repo" == "ignored-not-pushed" ]] ; then
+  if [[ "$registry_repo" == "$default_not_pushed_repo" ]] ; then
     docker_push_arg=""
     docker_cache_args="$docker_cache_from_arg"
   fi
