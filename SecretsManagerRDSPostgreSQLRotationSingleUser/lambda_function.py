@@ -386,14 +386,19 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
 
     """
     # Try to obtain a connection to the db
-    try:
-        if use_ssl:
+    if use_ssl:
+        try:
             # Setting sslmode='verify-full' will verify the server's certificate and check the server's host name
             conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
                                 connect_timeout=5, sslrootcert='/etc/pki/tls/cert.pem', sslmode='verify-full')
-        else:
-            conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
-                                connect_timeout=5, sslmode='disable')
+            return conn
+        except Exception as e:
+            logger.error("ssl connection connection failed with error: %r" % e)
+            return connect_and_authenticate(secret_dict, port, dbname, False)
+
+    try:
+        conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
+                        connect_timeout=5, sslmode='disable')
         logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
         return conn
     except pg.InternalError as e:
