@@ -14,7 +14,6 @@ logger.setLevel(logging.INFO)
 
 MAX_RDS_DB_INSTANCE_ARN_LENGTH = 256
 
-
 def lambda_handler(event, context):
     """Secrets Manager RDS PostgreSQL Handler
 

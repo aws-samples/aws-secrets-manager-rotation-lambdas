@@ -52,6 +52,8 @@ def lambda_handler(event, context):
     token = event['ClientRequestToken']
     step = event['Step']
 
+    logger.info("event %s", event)
+
     # Setup the client
     service_client = boto3.client('secretsmanager', endpoint_url=os.environ['SECRETS_MANAGER_ENDPOINT'])
 
@@ -638,6 +640,7 @@ def create_user_if_not_exists(service_client, current_dict, pending_dict):
         conn = get_connection(master_dict)
         if not conn:
             logger.error("setSecret: Unable to log into database using credentials in master secret %s" % master_arn)
+            logger.error(master_dict)
             raise ValueError("Unable to log into database using credentials in master secret %s" % master_arn)
 
         try:
