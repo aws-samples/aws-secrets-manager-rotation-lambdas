@@ -5,7 +5,7 @@ import boto3
 import json
 import logging
 import os
-import cx_Oracle
+import oracledb
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -281,7 +281,7 @@ def get_connection(secret_dict):
         secret_dict (dict): The Secret Dictionary
 
     Returns:
-        Connection: The cx_Oracle.Connection object if successful. None otherwise
+        Connection: The oracledb.Connection object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -292,12 +292,12 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = cx_Oracle.connect(secret_dict['username'],
+        conn = oracledb.connect(secret_dict['username'],
                                  secret_dict['password'],
                                  secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
         logger.info("Successfully established connection as user '%s' with host: '%s'" % (secret_dict['username'], secret_dict['host']))
         return conn
-    except (cx_Oracle.DatabaseError, cx_Oracle.OperationalError):
+    except (oracledb.DatabaseError, oracledb.OperationalError):
         return None
 
 
