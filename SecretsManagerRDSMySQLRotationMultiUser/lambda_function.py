@@ -117,8 +117,13 @@ def create_secret(service_client, arn, token):
         get_secret_dict(service_client, arn, "AWSPENDING", token)
         logger.info("createSecret: Successfully retrieved secret for %s." % arn)
     except service_client.exceptions.ResourceNotFoundException:
+        # Get username character limit from environment variable
+        username_limit = int(os.environ.get('USERNAME_CHARACTER_LIMIT', '16'))
         # Get the alternate username swapping between the original user and the user with _clone appended to it
         current_dict['username'] = get_alt_username(current_dict['username'])
+        # Check that the username is within correct length requirements for version
+        if current_dict['username'].endswith('_clone') and len(current_dict['username']) > username_limit:
+            raise ValueError("Unable to clone user, username length with _clone appended would exceed %s characters" % username_limit)
 
         # Get exclude characters from environment variable
         exclude_characters = os.environ['EXCLUDE_CHARACTERS'] if 'EXCLUDE_CHARACTERS' in os.environ else '/@"\'\\'
@@ -500,10 +505,7 @@ def get_alt_username(current_username):
     if current_username.endswith(clone_suffix):
         return current_username[:(len(clone_suffix) * -1)]
     else:
-        new_username = current_username + clone_suffix
-        if len(new_username) > 16:
-            raise ValueError("Unable to clone user, username length with _clone appended would exceed 16 characters")
-        return new_username
+        return current_username + clone_suffix
 
 
 def get_password_option(version):
