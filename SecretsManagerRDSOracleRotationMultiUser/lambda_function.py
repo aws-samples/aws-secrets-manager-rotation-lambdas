@@ -5,7 +5,7 @@ import boto3
 import json
 import logging
 import os
-import cx_Oracle
+import oracledb
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -49,6 +49,9 @@ def lambda_handler(event, context):
         KeyError: If the secret json does not contain the expected keys
 
     """
+    # Thick client to match full functionality of cx_oracle
+    oracledb.init_oracle_client()
+
     arn = event['SecretId']
     token = event['ClientRequestToken']
     step = event['Step']
@@ -234,7 +237,7 @@ def set_secret(service_client, arn, token):
                     sql_commands = row[0].read().strip(' \n\t').replace("%s" % escaped_current, "%s" % escaped_username)
                     for sql_command in sql_commands.split('\n'):
                         cur.execute(sql_command)
-            except cx_Oracle.DatabaseError:
+            except oracledb.DatabaseError:
                 # If we were unable to find any grants skip this type
                 pass
     conn.commit()
@@ -321,7 +324,7 @@ def get_connection(secret_dict):
         secret_dict (dict): The Secret Dictionary
 
     Returns:
-        Connection: The cx_Oracle object if successful. None otherwise
+        Connection: The oracledb object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -332,12 +335,12 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = cx_Oracle.connect(secret_dict['username'],
-                                 secret_dict['password'],
-                                 secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
+        conn = oracledb.connect(user=secret_dict['username'],
+                                password=secret_dict['password'],
+                                dsn=secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
         logger.info("Successfully established connection as user '%s' with host: '%s'" % (secret_dict['username'], secret_dict['host']))
         return conn
-    except (cx_Oracle.DatabaseError, cx_Oracle.OperationalError):
+    except (oracledb.DatabaseError, oracledb.OperationalError):
         return None
 
 
