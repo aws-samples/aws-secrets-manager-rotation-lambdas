@@ -115,11 +115,8 @@ def create_secret(service_client, arn, token):
         get_secret_dict(service_client, arn, "AWSPENDING", token)
         logger.info("createSecret: Successfully retrieved secret for %s." % arn)
     except service_client.exceptions.ResourceNotFoundException:
-        # Get exclude characters from environment variable
-        exclude_characters = os.environ['EXCLUDE_CHARACTERS'] if 'EXCLUDE_CHARACTERS' in os.environ else '/@"\'\\;'
         # Generate a random password
-        passwd = service_client.get_random_password(ExcludeCharacters=exclude_characters)
-        current_dict['password'] = passwd['RandomPassword']
+        current_dict['password'] = get_random_password(service_client)
 
         # Put the secret
         service_client.put_secret_value(SecretId=arn, ClientRequestToken=token, SecretString=json.dumps(current_dict), VersionStages=['AWSPENDING'])
@@ -503,3 +500,49 @@ def get_connection_params_from_rds_api(master_dict, master_instance_arn):
     master_dict['dbname'] = "rdsadmin"
 
     return master_dict
+
+
+def get_environment_bool(variable_name, default_value):
+    """Loads the environment variable and converts it to the boolean.
+
+    Args:
+        variable_name (string): Name of environment variable
+
+        default_value (bool): The result will fallback to the default_value when the environment variable with the given name doesn't exist.
+
+    Returns:
+        bool: True when the content of environment variable contains either 'true', '1', 'y' or 'yes'
+    """
+    variable = os.environ.get(variable_name, str(default_value))
+    return variable.lower() in ['true', '1', 'y', 'yes']
+
+
+def get_random_password(service_client):
+    """ Generates a random new password. Generator loads parameters that affects the content of the resulting password from the environment
+    variables. When environment variable is missing sensible defaults are chosen.
+
+    Supported environment variables:
+        - EXCLUDE_CHARACTERS
+        - PASSWORD_LENGTH
+        - EXCLUDE_NUMBERS
+        - EXCLUDE_PUNCTUATION
+        - EXCLUDE_UPPERCASE
+        - EXCLUDE_LOWERCASE
+        - REQUIRE_EACH_INCLUDED_TYPE
+
+    Args:
+        service_client (client): The secrets manager service client
+
+    Returns:
+        string: The randomly generated password.
+    """
+    passwd = service_client.get_random_password(
+        ExcludeCharacters=os.environ.get('EXCLUDE_CHARACTERS', '/@"\'\\;'),
+        PasswordLength=int(os.environ.get('PASSWORD_LENGTH', 32)),
+        ExcludeNumbers=get_environment_bool('EXCLUDE_NUMBERS', False),
+        ExcludePunctuation=get_environment_bool('EXCLUDE_PUNCTUATION', False),
+        ExcludeUppercase=get_environment_bool('EXCLUDE_UPPERCASE', False),
+        ExcludeLowercase=get_environment_bool('EXCLUDE_LOWERCASE', False),
+        RequireEachIncludedType=get_environment_bool('REQUIRE_EACH_INCLUDED_TYPE', True)
+    )
+    return passwd['RandomPassword']
