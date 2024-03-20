@@ -125,11 +125,8 @@ def create_secret(service_client, arn, token):
         if current_dict['username'].endswith('_clone') and len(current_dict['username']) > username_limit:
             raise ValueError("Unable to clone user, username length with _clone appended would exceed %s characters" % username_limit)
 
-        # Get exclude characters from environment variable
-        exclude_characters = os.environ['EXCLUDE_CHARACTERS'] if 'EXCLUDE_CHARACTERS' in os.environ else '/@"\'\\'
         # Generate a random password
-        passwd = service_client.get_random_password(ExcludeCharacters=exclude_characters)
-        current_dict['password'] = passwd['RandomPassword']
+        current_dict['password'] = get_random_password(service_client)
 
         # Put the secret
         service_client.put_secret_value(SecretId=arn, ClientRequestToken=token, SecretString=json.dumps(current_dict), VersionStages=['AWSPENDING'])
@@ -467,9 +464,9 @@ def get_secret_dict(service_client, arn, stage, token=None, master_secret=False)
         # If this is an RDS-made Master Secret, we can fetch `host` and other connection params
         # from the DescribeDBInstances/DescribeDBClusters RDS API using the DB Instance/Cluster ARN as a filter.
         # The DB Instance/Cluster ARN is fetched from the RDS-made Master Secret's System Tags.
-        db_instance_arn = fetch_instance_arn_from_system_tags(service_client, arn)
-        if db_instance_arn is not None:
-            secret_dict = get_connection_params_from_rds_api(secret_dict, db_instance_arn)
+        db_instance_info = fetch_instance_arn_from_system_tags(service_client, arn)
+        if len(db_instance_info) != 0:
+            secret_dict = get_connection_params_from_rds_api(secret_dict, db_instance_info)
             logger.info("setSecret: Successfully fetched connection params for Master Secret %s from DescribeDBInstances API." % arn)
 
         # For non-RDS-made Master Secrets that are missing `host`, this will error below when checking for required connection params.
@@ -597,36 +594,35 @@ def fetch_instance_arn_from_system_tags(service_client, secret_arn):
         secret_arn (String): The secret ARN used in a DescribeSecrets API call to fetch the secret's metadata.
 
     Returns:
-        db_instance_arn (String): The DB Instance/Cluster ARN of the Primary RDS Instance
+        db_instance_info (dict): The DB Instance/Cluster ARN of the Primary RDS Instance and the tag for the instance
 
     """
     metadata = service_client.describe_secret(SecretId=secret_arn)
 
     if 'Tags' not in metadata:
         logger.warning("setSecret: The secret %s is not a service-linked secret, so it does not have a tag aws:rds:primarydbinstancearn or a tag aws:rds:primarydbclusterarn" % secret_arn)
-        return None
+        return {}
 
     tags = metadata['Tags']
 
     # Check if DB Instance/Cluster ARN is present in secret Tags
-    global ARN_SYSTEM_TAG
-    db_instance_arn = None
+    db_instance_info = {}
     for tag in tags:
         if tag['Key'].lower() == 'aws:rds:primarydbinstancearn' or tag['Key'].lower() == 'aws:rds:primarydbclusterarn':
-            ARN_SYSTEM_TAG = tag['Key'].lower()
-            db_instance_arn = tag['Value']
+            db_instance_info['ARN_SYSTEM_TAG'] = tag['Key'].lower()
+            db_instance_info['ARN'] = tag['Value']
 
     # DB Instance/Cluster ARN must be present in secret System Tags to use this work-around
-    if db_instance_arn is None:
+    if len(db_instance_info) == 0:
         logger.warning("setSecret: DB Instance ARN not present in Metadata System Tags for secret %s" % secret_arn)
-    elif len(db_instance_arn) > MAX_RDS_DB_INSTANCE_ARN_LENGTH:
-        logger.error("setSecret: %s is not a valid DB Instance ARN. It exceeds the maximum length of %d." % (db_instance_arn, MAX_RDS_DB_INSTANCE_ARN_LENGTH))
-        raise ValueError("%s is not a valid DB Instance ARN. It exceeds the maximum length of %d." % (db_instance_arn, MAX_RDS_DB_INSTANCE_ARN_LENGTH))
+    elif len(db_instance_info['ARN']) > MAX_RDS_DB_INSTANCE_ARN_LENGTH:
+        logger.error("setSecret: %s is not a valid DB Instance ARN. It exceeds the maximum length of %d." % (db_instance_info['ARN'], MAX_RDS_DB_INSTANCE_ARN_LENGTH))
+        raise ValueError("%s is not a valid DB Instance ARN. It exceeds the maximum length of %d." % (db_instance_info['ARN'], MAX_RDS_DB_INSTANCE_ARN_LENGTH))
 
-    return db_instance_arn
+    return db_instance_info
 
 
-def get_connection_params_from_rds_api(master_dict, master_instance_arn):
+def get_connection_params_from_rds_api(master_dict, master_instance_info):
     """Fetches connection parameters (`host`, `port`, etc.) from the DescribeDBInstances/DescribeDBClusters RDS API using `master_instance_arn` in the master secret metadata as a filter.
 
     This helper function fetches connection parameters from the DescribeDBInstances/DescribeDBClusters RDS API using `master_instance_arn` in the master secret metadata as a filter.
@@ -634,7 +630,9 @@ def get_connection_params_from_rds_api(master_dict, master_instance_arn):
     Args:
         master_dict (dictionary): The master secret dictionary that will be updated with connection parameters.
 
-        master_instance_arn (string): The DB Instance/Cluster ARN from master secret System Tags that will be used as a filter in DescribeDBInstances/DescribeDBClusters RDS API calls.
+        master_instance_info (dict): A dictionary containing an 'ARN' and 'ARN_SYSTEM_TAG' key.
+            - The 'ARN_SYSTEM_TAG' value tells us if the DB is an instance or cluster so we know what 'Describe' RDS API to call and how to setup the connection parameters.
+            - The 'ARN' value is the DB Instance/Cluster ARN from master secret System Tags that will be used as a filter in DescribeDBInstances/DescribeDBClusters RDS API calls.
 
     Returns:
         master_dict (dictionary): An updated master secret dictionary that now contains connection parameters such as `host`, `port`, etc.
@@ -647,18 +645,18 @@ def get_connection_params_from_rds_api(master_dict, master_instance_arn):
     # Setup the client
     rds_client = boto3.client('rds')
 
-    if ARN_SYSTEM_TAG == 'aws:rds:primarydbinstancearn':
+    if master_instance_info['ARN_SYSTEM_TAG'] == 'aws:rds:primarydbinstancearn':
         # Call DescribeDBInstances RDS API
         try:
-            describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=master_instance_arn)
+            describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=master_instance_info['ARN'])
         except Exception as err:
             logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
             raise Exception("Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
         # Verify the instance was found
         instances = describe_response['DBInstances']
         if len(instances) == 0:
-            logger.error("setSecret: %s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_arn)
-            raise ValueError("%s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_arn)
+            logger.error("setSecret: %s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_info['ARN'])
+            raise ValueError("%s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_info['ARN'])
 
         # put connection parameters in master secret dictionary
         primary_instance = instances[0]
@@ -666,18 +664,18 @@ def get_connection_params_from_rds_api(master_dict, master_instance_arn):
         master_dict['port'] = primary_instance['Endpoint']['Port']
         master_dict['engine'] = primary_instance['Engine']
 
-    elif ARN_SYSTEM_TAG == 'aws:rds:primarydbclusterarn':
+    elif master_instance_info['ARN_SYSTEM_TAG'] == 'aws:rds:primarydbclusterarn':
         # Call DescribeDBClusters RDS API
         try:
-            describe_response = rds_client.describe_db_clusters(DBClusterIdentifier=master_instance_arn)
+            describe_response = rds_client.describe_db_clusters(DBClusterIdentifier=master_instance_info['ARN'])
         except Exception as err:
             logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBClusters RDS API: %s" % err)
             raise Exception("Encountered API error while fetching connection parameters from DescribeDBClusters RDS API: %s" % err)
         # Verify the instance was found
         instances = describe_response['DBClusters']
         if len(instances) == 0:
-            logger.error("setSecret: %s is not a valid DB Cluster ARN. No Instances found when using DescribeDBClusters RDS API to get connection params." % master_instance_arn)
-            raise ValueError("%s is not a valid DB Cluster ARN. No Instances found when using DescribeDBClusters RDS API to get connection params." % master_instance_arn)
+            logger.error("setSecret: %s is not a valid DB Cluster ARN. No Instances found when using DescribeDBClusters RDS API to get connection params." % master_instance_info['ARN'])
+            raise ValueError("%s is not a valid DB Cluster ARN. No Instances found when using DescribeDBClusters RDS API to get connection params." % master_instance_info['ARN'])
 
         # put connection parameters in master secret dictionary
         primary_instance = instances[0]
@@ -686,3 +684,49 @@ def get_connection_params_from_rds_api(master_dict, master_instance_arn):
         master_dict['engine'] = primary_instance['Engine']
 
     return master_dict
+
+
+def get_environment_bool(variable_name, default_value):
+    """Loads the environment variable and converts it to the boolean.
+
+    Args:
+        variable_name (string): Name of environment variable
+
+        default_value (bool): The result will fallback to the default_value when the environment variable with the given name doesn't exist.
+
+    Returns:
+        bool: True when the content of environment variable contains either 'true', '1', 'y' or 'yes'
+    """
+    variable = os.environ.get(variable_name, str(default_value))
+    return variable.lower() in ['true', '1', 'y', 'yes']
+
+
+def get_random_password(service_client):
+    """ Generates a random new password. Generator loads parameters that affects the content of the resulting password from the environment
+    variables. When environment variable is missing sensible defaults are chosen.
+
+    Supported environment variables:
+        - EXCLUDE_CHARACTERS
+        - PASSWORD_LENGTH
+        - EXCLUDE_NUMBERS
+        - EXCLUDE_PUNCTUATION
+        - EXCLUDE_UPPERCASE
+        - EXCLUDE_LOWERCASE
+        - REQUIRE_EACH_INCLUDED_TYPE
+
+    Args:
+        service_client (client): The secrets manager service client
+
+    Returns:
+        string: The randomly generated password.
+    """
+    passwd = service_client.get_random_password(
+        ExcludeCharacters=os.environ.get('EXCLUDE_CHARACTERS', '/@"\'\\'),
+        PasswordLength=int(os.environ.get('PASSWORD_LENGTH', 32)),
+        ExcludeNumbers=get_environment_bool('EXCLUDE_NUMBERS', False),
+        ExcludePunctuation=get_environment_bool('EXCLUDE_PUNCTUATION', False),
+        ExcludeUppercase=get_environment_bool('EXCLUDE_UPPERCASE', False),
+        ExcludeLowercase=get_environment_bool('EXCLUDE_LOWERCASE', False),
+        RequireEachIncludedType=get_environment_bool('REQUIRE_EACH_INCLUDED_TYPE', True)
+    )
+    return passwd['RandomPassword']
