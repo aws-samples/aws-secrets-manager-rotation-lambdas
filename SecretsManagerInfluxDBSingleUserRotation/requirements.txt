@@ -1,0 +1,2 @@
+influxdb-client[ciso]
+boto3
