@@ -93,7 +93,7 @@ Token Credentials (for token rotation)
     "engine": "timestream-influxdb",            // mandatory engine name
     "org": "string",                            // mandatory organization to associate token with
     "operatorTokenArn": "string",               // mandatory arn for operator token
-    "type": "string",                           // "allAccess" or "operator" or "custom" # 'operator' mutually exclusive with all below
+    "type": "string",                           // "allAccess" or "operator" or "custom"
     "dbIdentifier": "string",                   // mandatory DB instance identifier
     "token": "string",                          // optional, actual secret string. If added the lambda will delete this value and rotate to new value. If token type is operator the field is mandatory. If ommitted a new token will be created when authentication creation is enabled.
     "writeBucket": ["string", "string", ...],   // optional list of bucketIDs, must be input with the plaintext panel of the secrets manager.
