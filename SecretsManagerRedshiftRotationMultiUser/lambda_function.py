@@ -217,7 +217,8 @@ def set_secret(service_client, arn, token):
                                 (current_dict['username'], perm))
                     databases = [row.datname for row in cur.fetchall()]
                     if databases:
-                        cur.execute("GRANT %s ON DATABASE %s TO %s" % (perm, ','.join(databases), pending_username))
+                        for database in databases:
+                            cur.execute("GRANT %s ON DATABASE %s TO %s" % (perm, database, pending_username))
 
                 # Grant table permissions
                 table_perm_types = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'REFERENCES']
