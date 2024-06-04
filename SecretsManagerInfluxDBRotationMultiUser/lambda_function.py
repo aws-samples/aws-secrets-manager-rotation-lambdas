@@ -227,7 +227,7 @@ def create_secret(secrets_client, influxdb_client, arn, version_id, create_auth_
             else:  # custom
                 token_perms = create_custom_token_perms(current_secret_dict, org.id)
 
-            if len(token_perms) == 0 and current_secret_dict["type"] != "operator":
+            if not token_perms and current_secret_dict["type"] != "operator":
                 raise ValueError("No permissions were set for token creation")
 
             final_token_perm = generate_or_copy_permissions(
