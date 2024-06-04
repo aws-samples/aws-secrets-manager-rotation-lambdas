@@ -11,40 +11,6 @@ from contextlib import contextmanager
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-TIMESTREAM_INFLUXDB_SERVICE = "timestream-influxdb"
-
-# Mandatory user secret fields
-INFLUXDB_ENGINE = "engine"
-INFLUXDB_INSTANCE_IDENTIFIER = "dbIdentifier"
-
-# Mandatory user secret fields
-INFLUXDB_USERNAME = "username"
-
-# Optional user secret fields
-INFLUXDB_PASSWORD = "password"
-
-# Optional token secret fields
-INFLUXDB_TOKEN = "token"
-
-# Stages
-PREVIOUS_STAGE = "AWSPREVIOUS"
-CURRENT_STAGE = "AWSCURRENT"
-PENDING_STAGE = "AWSPENDING"
-
-# Steps
-CREATE_STEP = "createSecret"
-SET_STEP = "setSecret"
-TEST_STEP = "testSecret"
-FINISH_STEP = "finishSecret"
-
-# get_db_info response fields
-INFLUXDB_ENDPOINT = "endpoint"
-
-# Environment variable keys
-SECRETS_MANAGER_ENDPOINT = "SECRETS_MANAGER_ENDPOINT"
-AUTH_CREATION_ENABLED = "AUTHENTICATION_CREATION_ENABLED"
-
-
 def lambda_handler(event, context):
     """Secrets Manager InfluxDB User Rotation Multi User Handler
 
@@ -61,7 +27,7 @@ def lambda_handler(event, context):
         'engine': <required: must be set to 'timestream-influxdb'>,
         'username': <required: username>,
         'password': <required: password>,
-        'dbIdentifier': <optional: DB identifier>,
+        'dbIdentifier': <required: DB identifier>,
     }
 
     Args:
@@ -82,32 +48,15 @@ def lambda_handler(event, context):
     version_id = event["ClientRequestToken"]
     step = event["Step"]
 
-    if arn == "" or arn is None:
-        raise ValueError("arn is null or empty.")
-    if version_id == "" or version_id is None:
-        raise ValueError("version_id is null or empty.")
-    if step == "" or step is None:
-        raise ValueError("step is null or empty.")
-
     boto_session = boto3.Session()
-
-    if SECRETS_MANAGER_ENDPOINT not in os.environ:
-        raise KeyError(
-            "SECRETS_MANAGER_ENDPOINT environment variable not set in the environment variables."
-        )
-
-    secret_manager_endpoint = os.environ[SECRETS_MANAGER_ENDPOINT]
-    if secret_manager_endpoint == "" or secret_manager_endpoint is None:
-        raise ValueError(
-            "Secret manager endpoint is null or empty, set the environment variable in the lambda configuration."
-        )
     secrets_client = boto_session.client(
-        "secretsmanager", endpoint_url=secret_manager_endpoint
+        "secretsmanager", endpoint_url=os.environ["SECRETS_MANAGER_ENDPOINT"]
     )
+    influxdb_client = boto_session.client("timestream-influxdb")
 
     # Make sure the version is staged correctly
     metadata = secrets_client.describe_secret(SecretId=arn)
-    if not metadata["RotationEnabled"]:
+    if "RotationEnabled" in metadata and not metadata["RotationEnabled"]:
         logger.error("Secret %s is not enabled for rotation" % arn)
         raise ValueError("Secret %s is not enabled for rotation" % arn)
     versions = metadata["VersionIdsToStages"]
@@ -120,13 +69,13 @@ def lambda_handler(event, context):
             "Secret version %s has no stage for rotation of secret %s."
             % (version_id, arn)
         )
-    if CURRENT_STAGE in versions[version_id]:
+    if "AWSCURRENT" in versions[version_id]:
         logger.info(
             "Secret version %s already set as AWSCURRENT for secret %s."
             % (version_id, arn)
         )
         return
-    elif PENDING_STAGE not in versions[version_id]:
+    elif "AWSPENDING" not in versions[version_id]:
         logger.error(
             "Secret version %s not set as AWSPENDING for rotation of secret %s."
             % (version_id, arn)
@@ -136,67 +85,23 @@ def lambda_handler(event, context):
             % (version_id, arn)
         )
 
-    if step == CREATE_STEP:
-        create_secret(secrets_client, boto_session, arn, version_id)
+    if step == "createSecret":
+        create_secret(secrets_client, arn, version_id)
 
-    elif step == SET_STEP:
-        set_secret(secrets_client, boto_session, arn, version_id)
+    elif step == "setSecret":
+        set_secret(secrets_client, influxdb_client, arn, version_id)
 
-    elif step == TEST_STEP:
-        test_secret(secrets_client, boto_session, arn, version_id)
+    elif step == "testSecret":
+        test_secret(secrets_client, influxdb_client, arn, version_id)
 
-    elif step == FINISH_STEP:
-        finish_secret(secrets_client, boto_session, arn, version_id)
+    elif step == "finishSecret":
+        finish_secret(secrets_client, arn, version_id)
 
     else:
-        raise ValueError("Invalid step parameter %s" % step)
+        logger.error("lambda_handler: Invalid setp parameter %s for secret %s" % (step, arn))
+        raise ValueError("Invalid step parameter %s for secret %s" % (step, arn))
 
-
-@contextmanager
-def get_connection(endpoint_url, secret_dict, arn, step, ignore_error=False):
-    """Get connection to InfluxDB
-
-    This helper function returns a connection to the provided InfluxDB instance.
-
-    Args:
-        endpoint_url (string): Url for the InfluxDB instance
-        secret_dict (dictionary): Dictionary with username/password to authenticate connection
-        arn (string): Arn for secret to log in event of failure to make connection
-        step (string): Step in which the lambda function is making the connection
-        ignore_error (boolean): Flag for if to ignore errors
-
-    Raises:
-        ValueError: If the connection or health check fails
-
-    """
-    conn = None
-    try:
-        conn = influxdb_client.InfluxDBClient(
-            url="https://" + endpoint_url + ":8086",
-            username=secret_dict[INFLUXDB_USERNAME],
-            password=secret_dict[INFLUXDB_PASSWORD],
-            debug=False,
-            verify_ssl=True,
-        )
-
-        # Verify InfluxDB connection
-        health = conn.ping()
-        if not health and not ignore_error:
-            logger.error("%s: Connection failure" % step)
-
-        yield conn
-    except Exception as err:
-        if not ignore_error:
-            raise ValueError(
-                "%s: Failed to set new authorization with secret ARN %s %s"
-                % (step, arn, err)
-            ) from err
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-def create_secret(secrets_client, boto_session, arn, version_id):
+def create_secret(secrets_client, arn, version_id):
     """Create the secret
 
     This method first checks for the existence of a secret for the passed in user. If one does not exist, it will generate a
@@ -204,37 +109,36 @@ def create_secret(secrets_client, boto_session, arn, version_id):
 
     Args:
         secrets_client (client): The secrets manager service client
-        boto_session (session): Session to retrieve timestream-influxdb client
         arn (string): The secret ARN or other identifier
         version_id (string): The ClientRequestToken associated with the secret version
 
     """
 
     # Make sure the current secret exists
-    current_secret_dict = get_secret_dict(secrets_client, arn, CURRENT_STAGE)
+    current_secret_dict = get_secret_dict(secrets_client, arn, "AWSCURRENT")
 
     # Now try to get the secret, if that fails, put a new secret
     try:
-        get_secret_dict(secrets_client, arn, PENDING_STAGE, version_id)
+        get_secret_dict(secrets_client, arn, "AWSPENDING", version_id)
         logger.info("create_secret: Successfully retrieved secret for %s." % arn)
     except secrets_client.exceptions.ResourceNotFoundException:
-        current_secret_dict[INFLUXDB_PASSWORD] = secrets_client.get_random_password()[
+        current_secret_dict["password"] = secrets_client.get_random_password()[
             "RandomPassword"
         ]
         secrets_client.put_secret_value(
             SecretId=arn,
             ClientRequestToken=version_id,
             SecretString=json.dumps(current_secret_dict),
-            VersionStages=[PENDING_STAGE],
+            VersionStages=["AWSPENDING"],
         )
 
     logger.info(
-        "create_secret: Successfully created new authorization for ARN %s and version %s."
+        "create_secret: Successfully generated new password and staged for ARN %s and version %s."
         % (arn, version_id)
     )
 
 
-def set_secret(secrets_client, boto_session, arn, version_id):
+def set_secret(secrets_client, influxdb_client, arn, version_id):
     """Set the secret
 
 
@@ -244,67 +148,64 @@ def set_secret(secrets_client, boto_session, arn, version_id):
 
     Args:
         secrets_client (client): The secrets manager service client
-        boto_session (session): Session to retrieve timestream-influxdb client
+        influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
         version_id (string): The ClientRequestToken associated with the secret version
 
     """
 
     try:
-        previous_secret_dict = get_secret_dict(secrets_client, arn, PREVIOUS_STAGE)
+        previous_secret_dict = get_secret_dict(secrets_client, arn, "AWSPREVIOUS")
     except (secrets_client.exceptions.ResourceNotFoundException, KeyError):
         previous_secret_dict = None
 
     # Make sure the current secret exists
-    current_secret_dict = get_secret_dict(secrets_client, arn, CURRENT_STAGE)
+    current_secret_dict = get_secret_dict(secrets_client, arn, "AWSCURRENT")
     pending_secret_dict = get_secret_dict(
-        secrets_client, arn, PENDING_STAGE, version_id
+        secrets_client, arn, "AWSPENDING", version_id
     )
     endpoint_url = get_db_info(
-        current_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER], boto_session
+        current_secret_dict["dbIdentifier"], influxdb_client
     )
 
     # Make sure the DB instance from current and pending match
-    if (
-        current_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER]
-        != pending_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER]
-    ):
+    if current_secret_dict["dbIdentifier"] != pending_secret_dict["dbIdentifier"]:
         logger.error(
             "setSecret: Attempting to modify user for a DB %s other than current DB %s"
             % (
-                pending_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER],
-                current_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER],
+                pending_secret_dict["dbIdentifier"],
+                current_secret_dict["dbIdentifier"],
             )
         )
         raise ValueError(
             "Attempting to modify user for DB %s other than current DB %s"
             % (
-                pending_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER],
-                current_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER],
+                pending_secret_dict["dbIdentifier"],
+                current_secret_dict["dbIdentifier"],
             )
         )
 
     # Make sure the username in current and pending secrets match
-    if current_secret_dict[INFLUXDB_USERNAME] != pending_secret_dict[INFLUXDB_USERNAME]:
+    if current_secret_dict["username"] != pending_secret_dict["username"]:
         logger.error(
             "setSecret: Attempting to modify user %s other than current user %s"
             % (
-                pending_secret_dict[INFLUXDB_USERNAME],
-                current_secret_dict[INFLUXDB_USERNAME],
+                pending_secret_dict["username"],
+                current_secret_dict["username"],
             )
         )
         raise ValueError(
             "Attempting to modify user for DB %s other than current DB %s"
             % (
-                pending_secret_dict[INFLUXDB_USERNAME],
-                current_secret_dict[INFLUXDB_USERNAME],
+                pending_secret_dict["username"],
+                current_secret_dict["username"],
             )
         )
 
     # First try to login with the pending secret, if it succeeds, return
     try:
         with get_connection(
-            endpoint_url, pending_secret_dict, arn, SET_STEP, True
+            endpoint_url, pending_secret_dict, arn, "setSecret", True
         ) as pending_conn:
             pending_conn.organizations_api().find_organizations()
             logger.info("Successfully authenticated the pending user secret.")
@@ -316,13 +217,16 @@ def set_secret(secrets_client, boto_session, arn, version_id):
     # Attempt connection and password update with the current secret
     try:
         with get_connection(
-            endpoint_url, current_secret_dict, arn, SET_STEP, True
+            endpoint_url, current_secret_dict, arn, "setSecret", True
         ) as conn:
             conn.users_api().update_password(
                 user=conn.users_api().me().id,
-                password=pending_secret_dict[INFLUXDB_PASSWORD],
+                password=pending_secret_dict["password"],
             )
             password_update_success = True
+            logger.info(
+                "Successfully authenticated the current secret for updating password"
+            )
     except Exception:
         pass
 
@@ -330,29 +234,36 @@ def set_secret(secrets_client, boto_session, arn, version_id):
     if not password_update_success and previous_secret_dict is not None:
         try:
             with get_connection(
-                endpoint_url, previous_secret_dict, arn, SET_STEP, True
+                endpoint_url, previous_secret_dict, arn, "setSecret", True
             ) as conn:
                 conn.users_api().update_password(
                     user=conn.users_api().me().id,
-                    password=pending_secret_dict[INFLUXDB_PASSWORD],
+                    password=pending_secret_dict["password"],
+                )
+                logger.info(
+                    "Successfully authenticated the previous secret for updating password"
                 )
                 password_update_success = True
         except Exception:
             pass
 
     if not password_update_success:
+        logger.error(
+            "setSecret: Failed to update password for secret arn %s"
+            % arn
+        )
         raise ValueError(
             "Unable to log into database with previous, current, or pending secret of secret arn %s"
             % arn
         )
 
     logger.info(
-        "set_secret: Successfully created new authorization for ARN %s and version %s."
+        "set_secret: Successfully updated the password for ARN %s and version %s."
         % (arn, version_id)
     )
 
 
-def test_secret(secrets_client, boto_session, arn, version_id):
+def test_secret(secrets_client, influxdb_client, arn, version_id):
     """Test the user against the InfluxDB instance
 
     This method attempts a connection with the Timestream for InfluxDB instance with the secrets staged
@@ -360,7 +271,7 @@ def test_secret(secrets_client, boto_session, arn, version_id):
 
     Args:
         secrets_client (client): The secrets manager service client
-        boto_session (session): Session to retrieve timestream-influxdb client
+        influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
         version_id (string): The ClientRequestToken associated with the secret version
 
@@ -368,58 +279,29 @@ def test_secret(secrets_client, boto_session, arn, version_id):
 
     """
 
-    current_secret_dict = get_secret_dict(secrets_client, arn, CURRENT_STAGE)
     pending_secret_dict = get_secret_dict(
-        secrets_client, arn, PENDING_STAGE, version_id
+        secrets_client, arn, "AWSPENDING", version_id
     )
-
-    # Verify that the current_secret_dict and pending_secret_dict share the same dbIdentifier
-    if (
-        current_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER]
-        != pending_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER]
-    ):
-        raise ValueError(
-            "Current and pending dbIdentifier values do not match for secret ARN %s"
-            % arn
-        )
-
-    # Make sure the username  from current and pending match
-    if current_secret_dict[INFLUXDB_USERNAME] != pending_secret_dict[INFLUXDB_USERNAME]:
-        logger.error(
-            "setSecret: Attempting to modify user %s other than current user %s"
-            % (
-                pending_secret_dict[INFLUXDB_USERNAME],
-                current_secret_dict[INFLUXDB_USERNAME],
-            )
-        )
-        raise ValueError(
-            "Attempting to modify user for DB %s other than current DB %s"
-            % (
-                pending_secret_dict[INFLUXDB_USERNAME],
-                current_secret_dict[INFLUXDB_USERNAME],
-            )
-        )
 
     # Verify pending authentication can successfully authenticate
     with get_connection(
-        get_db_info(pending_secret_dict[INFLUXDB_INSTANCE_IDENTIFIER], boto_session),
+        get_db_info(pending_secret_dict["dbIdentifier"], influxdb_client),
         pending_secret_dict,
         arn,
-        TEST_STEP,
+        "testSecret",
     ) as pending_user_client:
         pending_user_client.organizations_api().find_organizations()
 
     logger.info("test_secret: Successfully tested authentication rotation")
 
 
-def finish_secret(secrets_client, boto_session, arn, version_id):
+def finish_secret(secrets_client, arn, version_id):
     """Finish the secret
 
     This method finalizes the rotation process by marking the secret version passed in as the AWSCURRENT secret.
 
     Args:
         secrets_client (client): The secrets manager service client
-        boto_session (session): Session to retrieve timestream-influxdb client
         arn (string): The secret ARN or other identifier
         version_id (string): The ClientRequestToken associated with the secret version
 
@@ -432,7 +314,7 @@ def finish_secret(secrets_client, boto_session, arn, version_id):
     metadata = secrets_client.describe_secret(SecretId=arn)
     current_version = None
     for version in metadata["VersionIdsToStages"]:
-        if CURRENT_STAGE in metadata["VersionIdsToStages"][version]:
+        if "AWSCURRENT" in metadata["VersionIdsToStages"][version]:
             if version == version_id:
                 # The correct version is already marked as current, return
                 logger.info(
@@ -446,7 +328,7 @@ def finish_secret(secrets_client, boto_session, arn, version_id):
     # Finalize by staging the secret version current
     secrets_client.update_secret_version_stage(
         SecretId=arn,
-        VersionStage=CURRENT_STAGE,
+        VersionStage="AWSCURRENT",
         MoveToVersionId=version_id,
         RemoveFromVersionId=current_version,
     )
@@ -496,17 +378,17 @@ def get_secret_dict(secrets_client, arn, stage, version_id=None):
 
     # Run semantic validations for secrets
     required_fields = [
-        INFLUXDB_ENGINE,
-        INFLUXDB_USERNAME,
-        INFLUXDB_PASSWORD,
-        INFLUXDB_INSTANCE_IDENTIFIER,
+        "engine",
+        "username",
+        "password",
+        "dbIdentifier",
     ]
 
     for field in required_fields:
         if field not in secret_dict:
             raise KeyError("%s key is missing from secret JSON" % field)
 
-    if secret_dict["engine"] != TIMESTREAM_INFLUXDB_SERVICE:
+    if secret_dict["engine"] != "timestream-influxdb":
         raise KeyError(
             "Database engine must be set to 'timestream-influxdb' in order to use this rotation lambda"
         )
@@ -514,7 +396,7 @@ def get_secret_dict(secrets_client, arn, stage, version_id=None):
     return secret_dict
 
 
-def get_db_info(db_instance_identifier, boto_session):
+def get_db_info(db_instance_identifier, influxdb_client):
     """Get InfluxDB information
 
     This helper function returns the url for the InfluxDB instance,
@@ -522,7 +404,7 @@ def get_db_info(db_instance_identifier, boto_session):
 
     Args:
         db_instance_identifier (string): The InfluxDB instance identifier
-        boto_session (session): Session to retrieve timestream-influxdb client
+        influxdb_client (client): The InfluxDB client
 
     Raises:
         ValueError: Failed to retrieve DB information
@@ -530,10 +412,58 @@ def get_db_info(db_instance_identifier, boto_session):
 
     """
 
-    influx_client = boto_session.client(TIMESTREAM_INFLUXDB_SERVICE)
-    describe_response = influx_client.get_db_instance(identifier=db_instance_identifier)
+    describe_response = influxdb_client.get_db_instance(identifier=db_instance_identifier)
 
-    if describe_response is None or describe_response[INFLUXDB_ENDPOINT] is None:
+    if describe_response is None or describe_response["endpoint"] is None:
         raise KeyError("Invalid endpoint info for influxdb instance")
 
-    return describe_response[INFLUXDB_ENDPOINT]
+    return describe_response["endpoint"]
+
+
+
+@contextmanager
+def get_connection(endpoint_url, secret_dict, arn, step, ignore_error=False):
+    """Get connection to InfluxDB
+
+    This helper function returns a connection to the provided InfluxDB instance.
+
+    Args:
+        endpoint_url (string): Url for the InfluxDB instance
+        secret_dict (dictionary): Dictionary with username/password to authenticate connection
+        arn (string): Arn for secret to log in event of failure to make connection
+        step (string): Step in which the lambda function is making the connection
+        ignore_error (boolean): Flag for if to ignore errors
+
+    Raises:
+        ValueError: If the connection or health check fails
+
+    """
+    conn = None
+    try:
+        conn = influxdb_client.InfluxDBClient(
+            url="https://" + endpoint_url + ":8086",
+            username=secret_dict["username"],
+            password=secret_dict["password"],
+            debug=False,
+            verify_ssl=True,
+        )
+
+        # Verify InfluxDB connection
+        health = conn.ping()
+        if not health and not ignore_error:
+            logger.error("%s: Connection failure" % step)
+
+        yield conn
+    except Exception as err:
+        if not ignore_error:
+            logger.error("%s: Connection failure with secret ARN %s %s" % (step, arn, err))
+            raise ValueError(
+                "%s: Failed to set new authorization with secret ARN %s %s"
+                % (step, arn, err)
+            ) from err
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+
