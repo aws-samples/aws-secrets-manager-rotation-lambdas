@@ -45,7 +45,7 @@ def lambda_handler(event, context):
 
     """
     arn = event["SecretId"]
-    version_id = event["ClientRequestToken"]
+    version_token = event["ClientRequestToken"]
     step = event["Step"]
 
     boto_session = boto3.Session()
@@ -60,48 +60,48 @@ def lambda_handler(event, context):
         logger.error("Secret %s is not enabled for rotation" % arn)
         raise ValueError("Secret %s is not enabled for rotation" % arn)
     versions = metadata["VersionIdsToStages"]
-    if version_id not in versions:
+    if version_token not in versions:
         logger.error(
             "Secret version %s has no stage for rotation of secret %s."
-            % (version_id, arn)
+            % (version_token, arn)
         )
         raise ValueError(
             "Secret version %s has no stage for rotation of secret %s."
-            % (version_id, arn)
+            % (version_token, arn)
         )
-    if "AWSCURRENT" in versions[version_id]:
+    if "AWSCURRENT" in versions[version_token]:
         logger.info(
             "Secret version %s already set as AWSCURRENT for secret %s."
-            % (version_id, arn)
+            % (version_token, arn)
         )
         return
-    elif "AWSPENDING" not in versions[version_id]:
+    elif "AWSPENDING" not in versions[version_token]:
         logger.error(
             "Secret version %s not set as AWSPENDING for rotation of secret %s."
-            % (version_id, arn)
+            % (version_token, arn)
         )
         raise ValueError(
             "Secret version %s not set as AWSPENDING for rotation of secret %s."
-            % (version_id, arn)
+            % (version_token, arn)
         )
 
     if step == "createSecret":
-        create_secret(secrets_client, arn, version_id)
+        create_secret(secrets_client, arn, version_token)
 
     elif step == "setSecret":
-        set_secret(secrets_client, influxdb_client, arn, version_id)
+        set_secret(secrets_client, influxdb_client, arn, version_token)
 
     elif step == "testSecret":
-        test_secret(secrets_client, influxdb_client, arn, version_id)
+        test_secret(secrets_client, influxdb_client, arn, version_token)
 
     elif step == "finishSecret":
-        finish_secret(secrets_client, arn, version_id)
+        finish_secret(secrets_client, arn, version_token)
 
     else:
         logger.error("lambda_handler: Invalid setp parameter %s for secret %s" % (step, arn))
         raise ValueError("Invalid step parameter %s for secret %s" % (step, arn))
 
-def create_secret(secrets_client, arn, version_id):
+def create_secret(secrets_client, arn, version_token):
     """Create the secret
 
     This method first checks for the existence of a secret for the passed in user. If one does not exist, it will generate a
@@ -110,7 +110,7 @@ def create_secret(secrets_client, arn, version_id):
     Args:
         secrets_client (client): The secrets manager service client
         arn (string): The secret ARN or other identifier
-        version_id (string): The ClientRequestToken associated with the secret version
+        version_token (string): The ClientRequestToken associated with the secret version
 
     """
 
@@ -119,7 +119,7 @@ def create_secret(secrets_client, arn, version_id):
 
     # Now try to get the secret, if that fails, put a new secret
     try:
-        get_secret_dict(secrets_client, arn, "AWSPENDING", version_id)
+        get_secret_dict(secrets_client, arn, "AWSPENDING", version_token)
         logger.info("create_secret: Successfully retrieved secret for %s." % arn)
     except secrets_client.exceptions.ResourceNotFoundException:
         current_secret_dict["password"] = secrets_client.get_random_password()[
@@ -127,18 +127,18 @@ def create_secret(secrets_client, arn, version_id):
         ]
         secrets_client.put_secret_value(
             SecretId=arn,
-            ClientRequestToken=version_id,
+            ClientRequestToken=version_token,
             SecretString=json.dumps(current_secret_dict),
             VersionStages=["AWSPENDING"],
         )
 
     logger.info(
         "create_secret: Successfully generated new password and staged for ARN %s and version %s."
-        % (arn, version_id)
+        % (arn, version_token)
     )
 
 
-def set_secret(secrets_client, influxdb_client, arn, version_id):
+def set_secret(secrets_client, influxdb_client, arn, version_token):
     """Set the secret
 
 
@@ -150,7 +150,7 @@ def set_secret(secrets_client, influxdb_client, arn, version_id):
         secrets_client (client): The secrets manager service client
         influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
-        version_id (string): The ClientRequestToken associated with the secret version
+        version_token (string): The ClientRequestToken associated with the secret version
 
     """
 
@@ -162,7 +162,7 @@ def set_secret(secrets_client, influxdb_client, arn, version_id):
     # Make sure the current secret exists
     current_secret_dict = get_secret_dict(secrets_client, arn, "AWSCURRENT")
     pending_secret_dict = get_secret_dict(
-        secrets_client, arn, "AWSPENDING", version_id
+        secrets_client, arn, "AWSPENDING", version_token
     )
     endpoint_url = get_db_info(
         current_secret_dict["dbIdentifier"], influxdb_client
@@ -259,11 +259,11 @@ def set_secret(secrets_client, influxdb_client, arn, version_id):
 
     logger.info(
         "set_secret: Successfully updated the password for ARN %s and version %s."
-        % (arn, version_id)
+        % (arn, version_token)
     )
 
 
-def test_secret(secrets_client, influxdb_client, arn, version_id):
+def test_secret(secrets_client, influxdb_client, arn, version_token):
     """Test the user against the InfluxDB instance
 
     This method attempts a connection with the Timestream for InfluxDB instance with the secrets staged
@@ -273,14 +273,14 @@ def test_secret(secrets_client, influxdb_client, arn, version_id):
         secrets_client (client): The secrets manager service client
         influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
-        version_id (string): The ClientRequestToken associated with the secret version
+        version_token (string): The ClientRequestToken associated with the secret version
 
     Raises: ValueError: If the secrets manager or pending users fail to authenticate.
 
     """
 
     pending_secret_dict = get_secret_dict(
-        secrets_client, arn, "AWSPENDING", version_id
+        secrets_client, arn, "AWSPENDING", version_token
     )
 
     # Verify pending authentication can successfully authenticate
@@ -295,7 +295,7 @@ def test_secret(secrets_client, influxdb_client, arn, version_id):
     logger.info("test_secret: Successfully tested authentication rotation")
 
 
-def finish_secret(secrets_client, arn, version_id):
+def finish_secret(secrets_client, arn, version_token):
     """Finish the secret
 
     This method finalizes the rotation process by marking the secret version passed in as the AWSCURRENT secret.
@@ -303,7 +303,7 @@ def finish_secret(secrets_client, arn, version_id):
     Args:
         secrets_client (client): The secrets manager service client
         arn (string): The secret ARN or other identifier
-        version_id (string): The ClientRequestToken associated with the secret version
+        version_token (string): The ClientRequestToken associated with the secret version
 
     Raises:
         ValueError: If the current secret and pending secret do not have matching dbIdentifier values.
@@ -315,7 +315,7 @@ def finish_secret(secrets_client, arn, version_id):
     current_version = None
     for version in metadata["VersionIdsToStages"]:
         if "AWSCURRENT" in metadata["VersionIdsToStages"][version]:
-            if version == version_id:
+            if version == version_token:
                 # The correct version is already marked as current, return
                 logger.info(
                     "finish_secret: Version %s already marked as AWSCURRENT for %s"
@@ -329,18 +329,18 @@ def finish_secret(secrets_client, arn, version_id):
     secrets_client.update_secret_version_stage(
         SecretId=arn,
         VersionStage="AWSCURRENT",
-        MoveToVersionId=version_id,
+        MoveToVersionId=version_token,
         RemoveFromVersionId=current_version,
     )
 
     logger.info(
         "finish_secret: Successfully set AWSCURRENT stage to version %s for secret %s."
-        % (version_id, arn)
+        % (version_token, arn)
     )
 
 
-def get_secret_dict(secrets_client, arn, stage, version_id=None):
-    """Gets the secret dictionary corresponding for the secret arn, stage, and version_id
+def get_secret_dict(secrets_client, arn, stage, version_token=None):
+    """Gets the secret dictionary corresponding for the secret arn, stage, and version_token
 
     This helper function gets credentials for the arn and stage passed in and returns the dictionary by parsing the
     JSON string
@@ -361,10 +361,10 @@ def get_secret_dict(secrets_client, arn, stage, version_id=None):
 
     """
 
-    # Only do VersionId validation against the stage if a version_id is passed in
-    if version_id:
+    # Only do VersionId validation against the stage if a version_token is passed in
+    if version_token:
         secret = secrets_client.get_secret_value(
-            SecretId=arn, VersionId=version_id, VersionStage=stage
+            SecretId=arn, VersionId=version_token, VersionStage=stage
         )
     else:
         secret = secrets_client.get_secret_value(SecretId=arn, VersionStage=stage)
