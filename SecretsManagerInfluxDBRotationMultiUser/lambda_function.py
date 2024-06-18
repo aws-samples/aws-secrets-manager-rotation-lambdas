@@ -81,7 +81,6 @@ def lambda_handler(event, context):
     Raises:
         ResourceNotFoundException: If the secret with the specified arn and stage does not exist
         ValueError: If the secret is not properly configured for rotation
-        KeyError: If SECRETS_MANAGER_ENDPOINT not set in the environment variables
 
     """
     arn = event["SecretId"]
@@ -166,16 +165,16 @@ def create_secret(secrets_client, influxdb_client, arn, version_token, create_au
             with get_connection(endpoint_url, current_secret_dict, arn, "createSecret") as current_conn:
                 current_conn.organizations_api().find_organizations()
 
-        admin_secret_dict = get_admin_dict(secrets_client, current_secret_dict, "AWSCURRENT", arn)
         if "token" not in current_secret_dict and not create_auth_enabled:
            raise ValueError("Authentication creation has not been enabled to allow the lambda function to create tokens")
 
+        admin_secret_dict = get_admin_dict(secrets_client, current_secret_dict, "AWSCURRENT", arn)
         with get_connection(endpoint_url, admin_secret_dict, arn, "createSecret") as conn:
             org = conn.organizations_api().find_organizations(org=current_secret_dict["org"])[0]
 
             # Token creation can be done for non-operator tokens when the
             # AUTHENTICATION_CREATION_ENABLED environment variable is set to true
-            if create_auth_enabled and current_secret_dict["type"] != "operator":
+            if "token" not in current_secret_dict and create_auth_enabled and current_secret_dict["type"] != "operator":
                 if current_secret_dict["type"] == "allAccess":
                     token_perms = create_all_access_token_perms(org.id, conn.users_api().me().id)
                 else:  # custom
@@ -344,12 +343,7 @@ def get_secret_dict(secrets_client, arn, stage, version_token=None):
 
     # Run semantic validations for secrets
 
-    required_fields = [
-        "engine",
-        "type",
-        "dbIdentifier",
-        "org",
-    ]
+    required_fields = ["engine", "type", "dbIdentifier", "org"]
 
     for field in required_fields:
         if field not in secret_dict:
@@ -379,7 +373,7 @@ def get_admin_dict(secrets_client, secret_dict, stage, arn):
         arn (string): The secret ARN or other identifier
 
     Returns:
-        OperatorDictionary: Operator dictionary
+        OperatorDictionary (dictionary): Operator dictionary
 
     Raises:
         ResourceNotFoundException: If the secret with the specified arn and stage does not exist
@@ -416,8 +410,10 @@ def get_db_endpoint(db_instance_identifier, influxdb_client):
         db_instance_identifier (string): The InfluxDB instance identifier
         influxdb_client (client): The InfluxDB client
 
+    Returns:
+        endpoint (string): The endpoint for the DB instance
+
     Raises:
-        ValueError: Failed to retrieve DB information
         KeyError: DB info returned does not contain expected key
 
     """
@@ -449,20 +445,9 @@ def get_connection(endpoint_url, secret_dict, arn, step):
     conn = None
     try:
         conn = (
-            influxdb_client.InfluxDBClient(
-                url="https://" + endpoint_url + ":8086",
-                token=secret_dict["token"],
-                debug=False,
-                verify_ssl=True,
-            )
+            influxdb_client.InfluxDBClient(url="https://" + endpoint_url + ":8086", token=secret_dict["token"], debug=False, verify_ssl=True)
             if "token" in secret_dict
-            else influxdb_client.InfluxDBClient(
-                url="https://" + endpoint_url + ":8086",
-                username=secret_dict["username"],
-                password=secret_dict["password"],
-                debug=False,
-                verify_ssl=True,
-            )
+            else influxdb_client.InfluxDBClient(url="https://" + endpoint_url + ":8086", username=secret_dict["username"], password=secret_dict["password"], debug=False, verify_ssl=True)
         )
 
         # Verify InfluxDB connection
@@ -513,6 +498,7 @@ def append_organization_scoped_permission(token_perms, perm_type, action, org_id
         org_id (string): The organization id
 
     """
+
     token_perms.append(
         influxdb_client.Permission(resource=influxdb_client.PermissionResource(type=perm_type, org_id=org_id), action=action)
     )
@@ -530,6 +516,7 @@ def append_organization_permission(token_perms, perm_type, action, org_id):
         org_id (string): The organization id
 
     """
+
     token_perms.append(
         influxdb_client.Permission(resource=influxdb_client.PermissionResource(id=org_id, type=perm_type), action=action)
     )
@@ -584,8 +571,9 @@ def get_current_token_perms(conn, current_secret_dict):
     Raises:
         ValueError: If the token value defined in the secret does not exist in the db instance
 
-    Returns
+    Returns:
         current_token.permissions (list): The current permissions of the current token
+
     """
 
     authorizations = conn.authorizations_api().find_authorizations()
@@ -601,8 +589,8 @@ def get_current_token_perms(conn, current_secret_dict):
 def create_token(conn, current_secret_dict, token_perms, org):
     """
 
-    Create new authorization token in InfluxDB instance. The type and permissions are set from the values
-    defined in the secret dictionary. If these values have been altered then the new auth token will not be created.
+    Create new authorization token in InfluxDB instance and set the token value in the secret dictionary.
+    The type and permissions are set from the values defined in the secret dictionary.
 
     Args:
         conn (InfluxDBClient): The connection to the InfluxDB instance
@@ -627,7 +615,11 @@ def create_all_access_token_perms(org_id, user_id):
         org_id (string): Id for the organization to set permissions
         user_id (string): The id for the user
 
+    Returns:
+        token_perms (list): The set of permissions for an allAccess token
+
     """
+
     token_perms = []
     # allAccess token is scoped to a specific org and can access all buckets in that organization
     for perm_type in ALL_PERMISSION_TYPES:
@@ -653,7 +645,14 @@ def create_custom_token_perms(current_secret_dict, org_id):
         current_secret_dict (dictionary): Set of permissions to set for token
         org_id (string): Id for the organization to set permissions
 
+    Returns:
+        token_perms (list): The set of permissions for a custom token
+
+    Raises:
+        ValueError: If no permissions were set
+
     """
+
     token_perms = []
 
     if "readBuckets" in current_secret_dict:
@@ -689,6 +688,9 @@ def get_action_from_perm_string(perm_string):
     Args:
         perm_string (string): The permission string
 
+    Returns:
+        get_perm_string_item (string): The action portion of a permission string
+
     """
 
     return get_perm_string_item(perm_string, 0)
@@ -702,7 +704,10 @@ def get_type_from_perm_string(perm_string):
     Args:
         perm_string (string): The permission string
 
-    """
+    Returns:
+        get_perm_string_item (string): The type portion of a permission string
+
+   """
 
     return get_perm_string_item(perm_string, 1)
 
@@ -715,6 +720,9 @@ def get_perm_string_item(perm_string, idx):
     Args:
         perm_string: The permission string
         idx: The index of the item to retrieve
+
+    Returns:
+        perm_string (string): The permission string
 
     Raises:
         ValueError: If permission string does not match the formation <action>-<type>
