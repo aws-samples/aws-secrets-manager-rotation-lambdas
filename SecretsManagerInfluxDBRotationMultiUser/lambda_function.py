@@ -172,16 +172,18 @@ def create_secret(secrets_client, influxdb_client, arn, version_token, create_au
         with get_connection(endpoint_url, admin_secret_dict, arn, "createSecret") as conn:
             org = conn.organizations_api().find_organizations(org=current_secret_dict["org"])[0]
 
+            # If there is already a token already defined, copy the existing permission set
+            if "token" in current_secret_dict:
+                token_perms = get_current_token_perms(conn, current_secret_dict)
             # Token creation can be done for non-operator tokens when the
             # AUTHENTICATION_CREATION_ENABLED environment variable is set to true
-            if "token" not in current_secret_dict and create_auth_enabled and current_secret_dict["type"] != "operator":
+            elif create_auth_enabled and current_secret_dict["type"] != "operator":
                 if current_secret_dict["type"] == "allAccess":
                     token_perms = create_all_access_token_perms(org.id, conn.users_api().me().id)
                 else:  # custom
                     token_perms = create_custom_token_perms(current_secret_dict, org.id)
-            # If there is already a token already defined, copy the existing permission set
             else:
-                token_perms = get_current_token_perms(conn, current_secret_dict)
+                raise ValueError("Failed to copy or create a new token")
 
             create_token(conn, current_secret_dict, token_perms, org)
 
