@@ -126,7 +126,7 @@ def lambda_handler(event, context):
         finish_secret(secrets_client, influxdb_client, arn, version_token)
 
     else:
-        logger.error("lambda_handler: Invalid setp parameter %s for secret %s" % (step, arn))
+        logger.error("lambda_handler: Invalid step parameter %s for secret %s" % (step, arn))
         raise ValueError("Invalid step parameter %s for secret %s" % (step, arn))
 
 
@@ -186,8 +186,11 @@ def create_secret(secrets_client, influxdb_client, arn, version_token, create_au
                 raise ValueError("Failed to copy or create a new token")
 
             create_token(conn, current_secret_dict, token_perms, org)
-
-        secrets_client.put_secret_value(SecretId=arn, ClientRequestToken=version_token, SecretString=json.dumps(current_secret_dict), VersionStages=["AWSPENDING"])
+        try:
+            secrets_client.put_secret_value(SecretId=arn, ClientRequestToken=version_token, SecretString=json.dumps(current_secret_dict), VersionStages=["AWSPENDING"])
+        except:
+            delete_orphaned_token(endpoint_url, admin_secret_dict, arn, "createSecret", current_secret_dict)
+            raise
 
     logger.info("create_secret: Successfully created new authorization for ARN %s and version %s." % (arn, version_token))
 
