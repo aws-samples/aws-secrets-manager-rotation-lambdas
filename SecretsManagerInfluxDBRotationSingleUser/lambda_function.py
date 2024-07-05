@@ -1,4 +1,4 @@
-# Copyright 2023 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
 import boto3
@@ -14,13 +14,13 @@ logger.setLevel(logging.INFO)
 def lambda_handler(event, context):
     """Secrets Manager InfluxDB User Rotation Multi User Handler
 
-    This handler uses the single-user rotation scheme to rotate an InfluxDB authentication user. This rotation
-    scheme authenticates the current user in the InfluxDB instance and creates a new password for the user.
+    This handler uses the single user rotation strategy to rotate an InfluxDB users password. This rotation
+    strategy authenticates the current user in the InfluxDB instance and creates a new password for the user.
 
     InfluxDB users do not hold a specific set of permissions, but rather own tokens. Tokens cannot be owned
-    by multiple users. If the users who created a token gets deleted, so do the tokens. Tokens are the
+    by multiple users. If a user gets deleted so do the tokens that belong to that user. Tokens are the
     recommended way for managing access control with Timestream for InfluxDB. Users should be used to create
-    tokens, and the single-user rotation lambda function should be used to manage password rotation for those users.
+    tokens, and the single user Lambda rotation function should be used to manage password rotation for users.
 
     The Secret SecretString is expected to be a JSON string with the following format:
     {
@@ -39,7 +39,7 @@ def lambda_handler(event, context):
         context (LambdaContext): The Lambda runtime information
 
     Raises:
-        ResourceNotFoundException: If the secret with the specified arn and stage does not exist
+        ResourceNotFoundException: If the secret with the specified ARN and stage does not exist
         ValueError: If the secret is not properly configured for rotation
         KeyError: If SECRETS_MANAGER_ENDPOINT not set in the environment variables
 
@@ -55,8 +55,8 @@ def lambda_handler(event, context):
     # Make sure the version is staged correctly
     metadata = secrets_client.describe_secret(SecretId=arn)
     if "RotationEnabled" in metadata and not metadata["RotationEnabled"]:
-        logger.error("Secret %s is not enabled for rotation" % arn)
-        raise ValueError("Secret %s is not enabled for rotation" % arn)
+        logger.error("Secret %s is not enabled for rotation." % arn)
+        raise ValueError("Secret %s is not enabled for rotation." % arn)
     versions = metadata["VersionIdsToStages"]
     if version_token not in versions:
         logger.error("Secret version %s has no stage for rotation of secret %s." % (version_token, arn))
@@ -81,8 +81,8 @@ def lambda_handler(event, context):
         finish_secret(secrets_client, arn, version_token)
 
     else:
-        logger.error("lambda_handler: Invalid setp parameter %s for secret %s" % (step, arn))
-        raise ValueError("Invalid step parameter %s for secret %s" % (step, arn))
+        logger.error("lambda_handler: Invalid step parameter %s for secret %s." % (step, arn))
+        raise ValueError("Invalid step parameter %s for secret %s." % (step, arn))
 
 def create_secret(secrets_client, arn, version_token):
     """Create the secret
@@ -91,7 +91,7 @@ def create_secret(secrets_client, arn, version_token):
     password and place a new secret in the pending stage.
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         arn (string): The secret ARN or other identifier
         version_token (string): The ClientRequestToken associated with the secret version
 
@@ -120,7 +120,7 @@ def set_secret(secrets_client, influxdb_client, arn, version_token):
     as the user password in the database. Else, it throws a ValueError.
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
         version_token (string): The ClientRequestToken associated with the secret version
@@ -139,13 +139,13 @@ def set_secret(secrets_client, influxdb_client, arn, version_token):
 
     # Make sure the DB instance from current and pending match
     if current_secret_dict["dbIdentifier"] != pending_secret_dict["dbIdentifier"]:
-        logger.error("setSecret: Attempting to modify user for a DB %s other than current DB %s" % (pending_secret_dict["dbIdentifier"], current_secret_dict["dbIdentifier"]))
-        raise ValueError("Attempting to modify user for DB %s other than current DB %s" % (pending_secret_dict["dbIdentifier"], current_secret_dict["dbIdentifier"]))
+        logger.error("setSecret: Attempting to modify user for a DB %s other than current DB %s." % (pending_secret_dict["dbIdentifier"], current_secret_dict["dbIdentifier"]))
+        raise ValueError("Attempting to modify user for DB %s other than current DB %s." % (pending_secret_dict["dbIdentifier"], current_secret_dict["dbIdentifier"]))
 
     # Make sure the username in current and pending secrets match
     if current_secret_dict["username"] != pending_secret_dict["username"]:
-        logger.error("setSecret: Attempting to modify user %s other than current user %s" % (pending_secret_dict["username"], current_secret_dict["username"]))
-        raise ValueError("Attempting to modify user for DB %s other than current DB %s" % (pending_secret_dict["username"], current_secret_dict["username"]))
+        logger.error("setSecret: Attempting to modify user %s other than current user %s." % (pending_secret_dict["username"], current_secret_dict["username"]))
+        raise ValueError("Attempting to modify user %s other than current user %s." % (pending_secret_dict["username"], current_secret_dict["username"]))
 
     # First try to login with the pending secret, if it succeeds, return
     try:
@@ -162,7 +162,7 @@ def set_secret(secrets_client, influxdb_client, arn, version_token):
         with get_connection(endpoint_url, current_secret_dict, arn, "setSecret", True) as conn:
             conn.users_api().update_password(user=conn.users_api().me().id, password=pending_secret_dict["password"])
             password_update_success = True
-            logger.info("Successfully authenticated the current secret for updating password")
+            logger.info("Successfully authenticated the current secret for updating password.")
     except Exception:
         pass
 
@@ -171,14 +171,14 @@ def set_secret(secrets_client, influxdb_client, arn, version_token):
         try:
             with get_connection(endpoint_url, previous_secret_dict, arn, "setSecret", True) as conn:
                 conn.users_api().update_password(user=conn.users_api().me().id, password=pending_secret_dict["password"])
-                logger.info("Successfully authenticated the previous secret for updating password")
+                logger.info("Successfully authenticated the previous secret for updating password.")
                 password_update_success = True
         except Exception:
             pass
 
     if not password_update_success:
-        logger.error("setSecret: Failed to update password for secret arn %s" % arn)
-        raise ValueError("Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
+        logger.error("setSecret: Failed to update password for secret ARN %s." % arn)
+        raise ValueError("Unable to log into database with previous, current, or pending secret of secret ARN %s." % arn)
 
     logger.info("set_secret: Successfully updated the password for ARN %s and version %s." % (arn, version_token))
 
@@ -190,12 +190,12 @@ def test_secret(secrets_client, influxdb_client, arn, version_token):
     in AWSPENDING and ensures the pending and current secrets have matching dbIdentifier and username values.
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
         version_token (string): The ClientRequestToken associated with the secret version
 
-    Raises: ValueError: If the secrets manager or pending users fail to authenticate.
+    Raises: ValueError: If the pending user fails to authenticate.
 
     """
 
@@ -205,7 +205,7 @@ def test_secret(secrets_client, influxdb_client, arn, version_token):
     with get_connection(get_db_info(pending_secret_dict["dbIdentifier"], influxdb_client), pending_secret_dict, arn, "testSecret") as pending_user_client:
         pending_user_client.organizations_api().find_organizations()
 
-    logger.info("test_secret: Successfully tested authentication rotation")
+    logger.info("test_secret: Successfully tested authentication rotation.")
 
 
 def finish_secret(secrets_client, arn, version_token):
@@ -214,7 +214,7 @@ def finish_secret(secrets_client, arn, version_token):
     This method finalizes the rotation process by marking the secret version passed in as the AWSCURRENT secret.
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         arn (string): The secret ARN or other identifier
         version_token (string): The ClientRequestToken associated with the secret version
 
@@ -230,7 +230,7 @@ def finish_secret(secrets_client, arn, version_token):
         if "AWSCURRENT" in metadata["VersionIdsToStages"][version]:
             if version == version_token:
                 # The correct version is already marked as current, return
-                logger.info("finish_secret: Version %s already marked as AWSCURRENT for %s" % (version, arn))
+                logger.info("finish_secret: Version %s already marked as AWSCURRENT for %s." % (version, arn))
                 return
             current_version = version
             break
@@ -244,11 +244,11 @@ def finish_secret(secrets_client, arn, version_token):
 def get_secret_dict(secrets_client, arn, stage, version_token=None):
     """Gets the secret dictionary corresponding for the secret arn, stage, and version_token
 
-    This helper function gets credentials for the arn and stage passed in and returns the dictionary by parsing the
+    This helper function gets credentials for the ARN and stage passed in and returns the dictionary by parsing the
     JSON string
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         arn (string): The secret ARN or other identifier
         stage (string): The stage identifying the secret version
         versionId (string): The ClientRequestToken associated with the secret version, or None if no validation is desired
@@ -257,7 +257,7 @@ def get_secret_dict(secrets_client, arn, stage, version_token=None):
         SecretDictionary: Secret dictionary
 
     Raises:
-        ResourceNotFoundException: If the secret with the specified arn and stage does not exist
+        ResourceNotFoundException: If the secret with the specified ARN and stage does not exist
         ValueError: If the secret is not valid JSON
         KeyError: If required keys missing in secret or engine is not 'timestream-influxdb'
 
@@ -272,19 +272,19 @@ def get_secret_dict(secrets_client, arn, stage, version_token=None):
     try:
         secret_dict = json.loads(plaintext)
     except Exception:
-        # wrapping json parser exceptions to avoid possible token disclosure
-        logger.error("Invalid secret value json for secret %s." % arn)
-        raise ValueError("Invalid secret value json for secret %s." % arn)
+        # wrap JSON parser exceptions to avoid possible token disclosure
+        logger.error("Invalid secret value JSON for secret %s." % arn)
+        raise ValueError("Invalid secret value JSON for secret %s." % arn)
 
     # Run semantic validations for secrets
     required_fields = ["engine", "username", "password", "dbIdentifier"]
 
     for field in required_fields:
         if field not in secret_dict:
-            raise KeyError("%s key is missing from secret JSON" % field)
+            raise KeyError("%s key is missing from secret JSON." % field)
 
     if secret_dict["engine"] != "timestream-influxdb":
-        raise KeyError("Database engine must be set to 'timestream-influxdb' in order to use this rotation lambda")
+        raise KeyError("Database engine must be set to 'timestream-influxdb' in order to use this Lambda rotation function.")
 
     return secret_dict
 
@@ -311,7 +311,7 @@ def get_db_info(db_instance_identifier, influxdb_client):
     describe_response = influxdb_client.get_db_instance(identifier=db_instance_identifier)
 
     if describe_response is None or describe_response["endpoint"] is None:
-        raise KeyError("Invalid endpoint info for influxdb instance")
+        raise KeyError("Invalid endpoint info for InfluxDB instance.")
 
     return describe_response["endpoint"]
 
@@ -326,8 +326,8 @@ def get_connection(endpoint_url, secret_dict, arn, step, ignore_error=False):
     Args:
         endpoint_url (string): Url for the InfluxDB instance
         secret_dict (dictionary): Dictionary with username/password to authenticate connection
-        arn (string): Arn for secret to log in event of failure to make connection
-        step (string): Step in which the lambda function is making the connection
+        arn (string): ARN for secret to log in event of failure to make connection
+        step (string): Step in which the Lambda function is making the connection
         ignore_error (boolean): Flag for if to ignore errors
 
     Raises:
@@ -341,13 +341,13 @@ def get_connection(endpoint_url, secret_dict, arn, step, ignore_error=False):
         # Verify InfluxDB connection
         health = conn.ping()
         if not health and not ignore_error:
-            logger.error("%s: Connection failure" % step)
+            logger.error("%s: Connection failure." % step)
 
         yield conn
     except Exception as err:
         if not ignore_error:
-            logger.error("%s: Connection failure with secret ARN %s %s" % (step, arn, err))
-            raise ValueError("%s: Failed to set new authorization with secret ARN %s %s" % (step, arn, err)) from err
+            logger.error("%s: Connection failure with secret ARN %s %s." % (step, arn, err))
+            raise ValueError("%s: Failed to set new authorization with secret ARN %s %s." % (step, arn, err)) from err
     finally:
         if conn is not None:
             conn.close()

@@ -1,4 +1,4 @@
-# Copyright 2023 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
 import boto3
@@ -41,33 +41,26 @@ ALL_PERMISSION_TYPES = [
 def lambda_handler(event, context):
     """Secrets Manager InfluxDB Token Rotation Handler
 
-    This handler uses the multi-user rotation scheme to rotate an InfluxDB authentication token. This rotation
+    This handler uses the alternating users rotation strategy to rotate an InfluxDB authentication token. This rotation
     scheme authenticates the current token in the InfluxDB instance and creates a new token with the same
     permissions. The new token is then authenticated and verified to have the same properties as the previous token.
     The old token is then deleted, and the rotation is complete. InfluxDB client does not support setting a custom
     value for a token, so the createSecret and setSecret events both take place during the createSecret step.
 
-    There is no single-user scheme implementation for token rotation as not all tokens have the elevated permissions
-    to create a permission identical replacement token.
-
-    We recommend using the multi-user token rotation for managing access control and token rotations for Timestream
-    for InfluxDB. Best practice for managing InfluxDB access is creating least-privilege tokens with users. Tokens
-    allow for fine grain access control and should be used for uses other than token creation or accessing the UI.
-
-    Token creation can be achieved for non-operator tokens if you set the lambda environment variable
+    Token creation can be achieved for non-operator tokens if you set the Lambda environment variable
     AUTHENTICATION_CREATION_ENABLED to true.
 
     The Secret SecretString is expected to be a JSON string with the following format:
     {
         'engine': <required: must be set to 'timestream-influxdb'>,
         'org': <required: organization to associate token with>,
-        'adminSecretArn': <required: arn of the admin secret>,
-        'type': <required unless generating new token: 'allAccess' or 'operator' or 'custom'>,
+        'adminSecretArn': <required: ARN of the admin secret>,
+        'type': <required: 'allAccess' or 'operator' or 'custom'>,
         'dbIdentifier': <required: DB identifier>,
         'token': <required unless generating a new token: token being rotated>,
-        'writeBuckets': <optional: list of bucketIDs for custom type token, must be input within plaintext panel. e.g. ["id1","id2"]>,
-        'readBuckets': <optional: list of bucketIDs for custom type token, must be input within plaintext panel. e.g. ["id1","id2"]>,
-        'permissions': <optional: list of permissions for custom type token, must be input within plaintext panel. e.g. ["write-tasks","read-tasks"]>
+        'writeBuckets': <optional: list of bucket IDs for custom type token, for example ["id1","id2"]>,
+        'readBuckets': <optional: list of bucket IDs for custom type token, for example ["id1","id2"]>,
+        'permissions': <optional: list of permissions for custom type token, for example ["write-tasks","read-tasks"]>
     }
 
     Args:
@@ -79,7 +72,7 @@ def lambda_handler(event, context):
         context (LambdaContext): The Lambda runtime information
 
     Raises:
-        ResourceNotFoundException: If the secret with the specified arn and stage does not exist
+        ResourceNotFoundException: If the secret with the specified ARN and stage does not exist
         ValueError: If the secret is not properly configured for rotation
 
     """
@@ -100,8 +93,8 @@ def lambda_handler(event, context):
     # Make sure the version is staged correctly
     metadata = secrets_client.describe_secret(SecretId=arn)
     if "RotationEnabled" in metadata and not metadata["RotationEnabled"]:
-        logger.error("Secret %s is not enabled for rotation" % arn)
-        raise ValueError("Secret %s is not enabled for rotation" % arn)
+        logger.error("Secret %s is not enabled for rotation." % arn)
+        raise ValueError("Secret %s is not enabled for rotation." % arn)
     versions = metadata["VersionIdsToStages"]
     if version_token not in versions:
         logger.error("Secret version %s has no stage for rotation of secret %s." % (version_token, arn))
@@ -126,8 +119,8 @@ def lambda_handler(event, context):
         finish_secret(secrets_client, influxdb_client, arn, version_token)
 
     else:
-        logger.error("lambda_handler: Invalid step parameter %s for secret %s" % (step, arn))
-        raise ValueError("Invalid step parameter %s for secret %s" % (step, arn))
+        logger.error("lambda_handler: Invalid step parameter %s for secret %s." % (step, arn))
+        raise ValueError("Invalid step parameter %s for secret %s." % (step, arn))
 
 
 def create_secret(secrets_client, influxdb_client, arn, version_token, create_auth_enabled):
@@ -138,15 +131,15 @@ def create_secret(secrets_client, influxdb_client, arn, version_token, create_au
     value in the AWSPENDING secret value. This function completes both the createSecret and setSecret steps.
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
         version_token (string): The ClientRequestToken associated with the secret version
         create_auth_enabled (boolean): Flag for if authentication creation is enabled
 
     Raises:
-        ResourceNotFoundException: If the secret with the specified arn and stage does not exist
-        ValueError: If the secrets manager token fails to create a new token
+        ResourceNotFoundException: If the secret with the specified ARN and stage does not exist
+        ValueError: If Secrets Manager fails to create a new token
 
     """
 
@@ -166,7 +159,7 @@ def create_secret(secrets_client, influxdb_client, arn, version_token, create_au
                 current_conn.organizations_api().find_organizations()
 
         if "token" not in current_secret_dict and not create_auth_enabled:
-           raise ValueError("Authentication creation has not been enabled to allow the lambda function to create tokens")
+           raise ValueError("Authentication creation has not been enabled to allow the Lambda function to create tokens.")
 
         admin_secret_dict = get_admin_dict(secrets_client, current_secret_dict, "AWSCURRENT", arn)
         with get_connection(endpoint_url, admin_secret_dict, arn, "createSecret") as conn:
@@ -180,10 +173,10 @@ def create_secret(secrets_client, influxdb_client, arn, version_token, create_au
             elif create_auth_enabled and current_secret_dict["type"] != "operator":
                 if current_secret_dict["type"] == "allAccess":
                     token_perms = create_all_access_token_perms(org.id, conn.users_api().me().id)
-                else:  # custom
+                else:
                     token_perms = create_custom_token_perms(current_secret_dict, org.id)
             else:
-                raise ValueError("Failed to copy or create a new token")
+                raise ValueError("Failed to copy or create a new token.")
 
             create_token(conn, current_secret_dict, token_perms, org)
         try:
@@ -202,7 +195,7 @@ def set_secret(secrets_client, influxdb_client, arn, version_token):
     both tokens have been authenticated and the users the tokens belong to is verified to be the same.
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
         version_token (string): The ClientRequestToken associated with the secret version
@@ -225,19 +218,19 @@ def set_secret(secrets_client, influxdb_client, arn, version_token):
             # Validate current and pending tokens have the same users
             if current_auth is not None and (not current_auth.user == pending_auth.user):
                 delete_orphaned_token(endpoint_url, admin_secret_dict, arn, "setSecret", pending_secret_dict)
-                raise ValueError("Current and pending tokens failed user equality test for secret ARN %s" % arn)
+                raise ValueError("Current and pending tokens failed user equality test for secret ARN %s." % arn)
 
             # Validate that the current and pending secret dicts share the same DB identifier
             if current_secret_dict["dbIdentifier"] != pending_secret_dict["dbIdentifier"]:
                 delete_orphaned_token(endpoint_url, admin_secret_dict, arn, "setSecret", pending_secret_dict)
-                raise ValueError("Rotation is attempting to use a new DB instance for rotating token for secret arn %s" % arn)
+                raise ValueError("Rotation is attempting to use a new DB instance for rotating token for secret ARN %s." % arn)
 
-            # Calidate current and pending secrets have the same type
+            # Validate current and pending secrets have the same type
             if current_secret_dict["type"] != pending_secret_dict["type"]:
                 delete_orphaned_token(endpoint_url, admin_secret_dict, arn, "setSecret", pending_secret_dict)
-                raise ValueError("Current and pending secrets do now have the same token types for secret ARN %s" % arn)
+                raise ValueError("Current and pending secrets do not have the same token types for secret ARN %s." % arn)
 
-    logger.info("set_secret: Successfully completed")
+    logger.info("set_secret: Successfully completed.")
 
 
 def test_secret(secrets_client, influxdb_client, arn, version_token):
@@ -247,10 +240,12 @@ def test_secret(secrets_client, influxdb_client, arn, version_token):
     both tokens have been authenticated and the users the tokens belong to is verified to be the same.
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
         version_token (string): The ClientRequestToken associated with the secret version
+
+    Raises: ValueError: If the pending token fails to authenticate.
 
     """
 
@@ -261,7 +256,7 @@ def test_secret(secrets_client, influxdb_client, arn, version_token):
     with get_connection(endpoint_url, pending_secret_dict, arn, "testSecret") as pending_conn:
         pending_conn.organizations_api().find_organizations()
 
-    logger.info("test_secret: Successfully tested token rotation")
+    logger.info("test_secret: Successfully tested token rotation.")
 
 
 def finish_secret(secrets_client, influxdb_client, arn, version_token):
@@ -271,13 +266,13 @@ def finish_secret(secrets_client, influxdb_client, arn, version_token):
     deleting the previous authentication token in the InfluxDB instance.
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         influxdb_client (client): The InfluxDB client
         arn (string): The secret ARN or other identifier
         version_token (string): The ClientRequestToken associated with the secret version
 
     Raises:
-        ValueError: If the secrets manager fails to delete the previous user token in the InfluxDB instance.
+        ValueError: If Secrets Manager fails to delete the previous user token in the InfluxDB instance.
 
     """
     current_secret_dict = get_secret_dict(secrets_client, arn, "AWSCURRENT")
@@ -312,13 +307,13 @@ def finish_secret(secrets_client, influxdb_client, arn, version_token):
 
 
 def get_secret_dict(secrets_client, arn, stage, version_token=None):
-    """Gets the secret dictionary corresponding for the secret arn, stage, and token
+    """Gets the secret dictionary corresponding for the secret ARN, stage, and token
 
-    This helper function gets credentials for the arn and stage passed in and returns the dictionary by parsing the
+    This helper function gets credentials for the ARN and stage passed in and returns the dictionary by parsing the
     JSON string
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         arn (string): The secret ARN or other identifier
         stage (string): The stage identifying the secret version
         versionId (string): The ClientRequestToken associated with the secret version, or None if no validation is desired
@@ -327,7 +322,7 @@ def get_secret_dict(secrets_client, arn, stage, version_token=None):
         SecretDictionary: Secret dictionary
 
     Raises:
-        ResourceNotFoundException: If the secret with the specified arn and stage does not exist
+        ResourceNotFoundException: If the secret with the specified ARN and stage does not exist
         ValueError: If the secret is not valid JSON
         KeyError: If required keys missing in secret or engine is not 'timestream-influxdb'
 
@@ -342,9 +337,9 @@ def get_secret_dict(secrets_client, arn, stage, version_token=None):
     try:
         secret_dict = json.loads(plaintext)
     except Exception:
-        # wrapping json parser exceptions to avoid possible token disclosure
-        logger.error("Invalid secret value json for secret %s." % arn)
-        raise ValueError("Invalid secret value json for secret %s." % arn)
+        # wrap JSON parser exceptions to avoid possible token disclosure
+        logger.error("Invalid secret value JSON for secret %s." % arn)
+        raise ValueError("Invalid secret value JSON for secret %s." % arn)
 
     # Run semantic validations for secrets
 
@@ -352,16 +347,16 @@ def get_secret_dict(secrets_client, arn, stage, version_token=None):
 
     for field in required_fields:
         if field not in secret_dict:
-            raise KeyError("%s key is missing from secret JSON" % field)
+            raise KeyError("%s key is missing from secret JSON." % field)
 
     if secret_dict["type"] == "operator" and "token" not in secret_dict:
-        raise KeyError("The token value must be set when rotating an operator token")
+        raise KeyError("The token value must be set when rotating an operator token.")
 
     if secret_dict["type"] != "operator" and secret_dict["type"] != "allAccess" and secret_dict["type"] != "custom":
-        raise KeyError("%s is not a valid token type" % secret_dict["type"])
+        raise KeyError("%s is not a valid token type." % secret_dict["type"])
 
     if secret_dict["engine"] != "timestream-influxdb":
-        raise KeyError("Database engine must be set to 'timestream-influxdb' in order to use this rotation lambda")
+        raise KeyError("Database engine must be set to 'timestream-influxdb' in order to use this Lambda rotation function.")
 
     return secret_dict
 
@@ -372,7 +367,7 @@ def get_admin_dict(secrets_client, secret_dict, stage, arn):
     This helper function gets credentials for the operator
 
     Args:
-        secrets_client (client): The secrets manager service client
+        secrets_client (client): The Secrets Manager service client
         secret_dict (dict): The secret dictionary containing the ARN for the operator secret
         stage (string): The stage identifying the secret version
         arn (string): The secret ARN or other identifier
@@ -381,7 +376,7 @@ def get_admin_dict(secrets_client, secret_dict, stage, arn):
         OperatorDictionary (dictionary): Operator dictionary
 
     Raises:
-        ResourceNotFoundException: If the secret with the specified arn and stage does not exist
+        ResourceNotFoundException: If the secret with the specified ARN and stage does not exist
         ValueError: If the secret is not valid JSON
 
     """
@@ -393,14 +388,14 @@ def get_admin_dict(secrets_client, secret_dict, stage, arn):
     try:
         admin_secret_dict = json.loads(admin_plaintext)
     except Exception:
-        # wrapping json parser exceptions to avoid possible token disclosure
-        logger.error("Invalid secret value json for secret %s." % arn)
-        raise ValueError("Invalid secret value json for secret %s." % arn)
+        # wrap JSON parser exceptions to avoid possible token disclosure
+        logger.error("Invalid secret value JSON for secret %s." % arn)
+        raise ValueError("Invalid secret value JSON for secret %s." % arn)
 
     # Run validations against the secret
     for field in required_fields:
         if field not in admin_secret_dict:
-            raise KeyError("%s key is missing from secret JSON" % field)
+            raise KeyError("%s key is missing from secret JSON." % field)
 
     return admin_secret_dict
 
@@ -426,7 +421,7 @@ def get_db_endpoint(db_instance_identifier, influxdb_client):
     describe_response = influxdb_client.get_db_instance(identifier=db_instance_identifier)
 
     if describe_response is None or describe_response["endpoint"] is None:
-        raise KeyError("Invalid endpoint info for influxdb instance")
+        raise KeyError("Invalid endpoint info for InfluxDB instance.")
 
     return describe_response["endpoint"]
 
@@ -440,8 +435,8 @@ def get_connection(endpoint_url, secret_dict, arn, step):
     Args:
         endpoint_url (string): Url for the InfluxDB instance
         secret_dict (dictionary): Dictionary with either username/password or token to authenticate connection
-        arn (string): Arn for secret to log in event of failure to make connection
-        step (string): Step in which the lambda function is making the connection
+        arn (string): ARN for secret to log in event of failure to make connection
+        step (string): Step in which the Lambda function is making the connection
 
     Raises:
         ValueError: If the connection or health check fails
@@ -458,12 +453,12 @@ def get_connection(endpoint_url, secret_dict, arn, step):
         # Verify InfluxDB connection
         health = conn.ping()
         if not health:
-            logger.error("%s: Connection failure" % step)
+            logger.error("%s: Connection failure." % step)
 
         yield conn
     except Exception as err:
-        logger.error("%s: Connection failure with secret ARN %s %s" % (step, arn, err))
-        raise ValueError("%s: Failed to set new authorization with secret ARN %s %s" % (step, arn, err)) from err
+        logger.error("%s: Connection failure with secret ARN %s %s." % (step, arn, err))
+        raise ValueError("%s: Failed to set new authorization with secret ARN %s %s." % (step, arn, err)) from err
     finally:
         if conn is not None:
             conn.close()
@@ -478,7 +473,7 @@ def delete_orphaned_token(
 
     Args:
         endpoint_url (string): The url for the DB instance
-        admin_secret_dict (dictionary): The dictionary which we will used in the session to delete the orphaned token
+        admin_secret_dict (dictionary): The dictionary used to authorize the orphaned token deletion
         arn (string): The secret ARN or other identifier
         step (string): The current step for rotation
         pending_secret_dict(dictionary): The dictionary which holds the token to be deleted
@@ -585,9 +580,9 @@ def get_current_token_perms(conn, current_secret_dict):
     current_auth = next((auth for auth in authorizations if auth.token == current_secret_dict["token"]), None,)
 
     if current_auth is None:
-        raise ValueError("InfluxDB token is incorrect (can't find matching token) or empty operator token is set")
+        raise ValueError("Failed to find the current secret token defined in the InfluxDB instance.")
     else:
-        logger.info("Existing token found in DB instance, token will be rotated with existing permissions")
+        logger.info("Existing token found in DB instance, token will be rotated with existing permissions.")
         return current_auth.permissions
 
 
@@ -605,7 +600,7 @@ def create_token(conn, current_secret_dict, token_perms, org):
 
     """
 
-    # Influxdb doesn't support setting token values for already created tokens
+    # InfluxDB doesn't support setting token values for already created tokens
     # We must therefore create the token in InfluxDB at this stage
     new_authorization = conn.authorizations_api().create_authorization(org_id=org.id, permissions=token_perms)
     current_secret_dict["token"] = new_authorization.token
@@ -632,7 +627,7 @@ def create_all_access_token_perms(org_id, user_id):
             append_user_permission(token_perms, perm_type, "read", user_id)
             append_user_permission(token_perms, perm_type, "write", user_id)
         elif perm_type == "orgs":
-            # all access tokens only get read access for the organization
+            # allAccess tokens only get read access for the organization
             append_organization_permission(token_perms, perm_type, "read", org_id)
         else:
             append_organization_scoped_permission(token_perms, perm_type, "read", org_id)
@@ -666,21 +661,21 @@ def create_custom_token_perms(current_secret_dict, org_id):
     if "writeBuckets" in current_secret_dict:
         for bucket_id in current_secret_dict["writeBuckets"]:
             append_organization_and_bucket_scoped_permission(token_perms, "buckets", "write", org_id, bucket_id)
-    # Handle permissions list, i.e. ["write-tasks", "read-tasks"]
+    # Handle permissions list, for example ["write-tasks", "read-tasks"]
     if "permissions" in current_secret_dict:
         for perm in current_secret_dict["permissions"]:
             perm_type = get_type_from_perm_string(perm)
             action = get_action_from_perm_string(perm)
             # A permission of the form "read-orgs" needs to be formatted as
             # "read:/orgs/<org ID>", meaning the permission is to read the organization.
-            # append_organization_permission will format permissions this way
+            # Append_organization_permission will format permissions this way.
             if perm_type == "orgs":
                 append_organization_permission(token_perms, perm_type, action, org_id)
             else:
                 append_organization_scoped_permission(token_perms, perm_type, action, org_id)
 
     if not token_perms:
-        raise ValueError("No permissions were set for token creation")
+        raise ValueError("No permissions were set for token creation.")
 
     return token_perms
 
@@ -688,7 +683,7 @@ def create_custom_token_perms(current_secret_dict, org_id):
 def get_action_from_perm_string(perm_string):
     """
 
-    Parse string to return the action portion in index 0, i.e., <action>-<type>
+    Parse the string to return the action portion of a permission string. For example, read-users, return read.
 
     Args:
         perm_string (string): The permission string
@@ -704,7 +699,7 @@ def get_action_from_perm_string(perm_string):
 def get_type_from_perm_string(perm_string):
     """
 
-    Parse string to return the type portion in index 1, i.e., <action>-<type>
+    Parse the string to return the type portion of a permission string. For example, read-users, return users.
 
     Args:
         perm_string (string): The permission string
@@ -720,7 +715,7 @@ def get_type_from_perm_string(perm_string):
 def get_perm_string_item(perm_string, idx):
     """
 
-    Parse string to return either the action or type portion, i.e., <action>-<type>
+    Parse the string to return either the action or type portion of a permission string, where the string has the following format: <action>-<type>
 
     Args:
         perm_string: The permission string
@@ -735,7 +730,7 @@ def get_perm_string_item(perm_string, idx):
     """
 
     if not re.search("^[a-z][a-z]+-[a-z]+[a-z]$", perm_string):
-        raise ValueError("Permission %s does not fit the format <action>-<type>, e.g., write-tasks")
+        raise ValueError("Permission %s must fit the format <action>-<type>, for example write-tasks.")
 
     return perm_string.split("-", 1)[idx]
 
