@@ -1,5 +1,6 @@
 # Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
+import time
 
 import boto3
 import json
@@ -76,6 +77,9 @@ def lambda_handler(event, context):
 
     elif step == "setSecret":
         set_secret(service_client, arn, token)
+        # Wait for 10s to allow propagation of the newly set AWSPENDING password as the user password in the database.
+        # The database user password change is asynchronous.
+        time.sleep(10)
 
     elif step == "testSecret":
         test_secret(service_client, arn, token)
