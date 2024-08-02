@@ -5,8 +5,7 @@ import boto3
 import json
 import logging
 import os
-import pg
-import pgdb
+import redshift_connector
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -190,15 +189,20 @@ def set_secret(service_client, arn, token):
     try:
         with conn.cursor() as cur:
             # Get escaped username via quote_ident
-            cur.execute("SELECT quote_ident(%s)", (pending_dict['username'],))
+            cur.execute("SELECT quote_ident(%s)", (pending_dict["username"],))
             escaped_username = cur.fetchone()[0]
+            password = pending_dict["password"]
 
-            alter_role = "ALTER USER %s" % escaped_username
-            cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
+            cur.execute(f"alter user {escaped_username} password '{password}'")
             conn.commit()
-            logger.info("setSecret: Successfully set password for user %s in Redshift DB for secret arn %s." % (pending_dict['username'], arn))
+
+            logger.info(
+                "setSecret: Successfully set password for user %s in Redshift DB for secret arn %s."
+                % (pending_dict["username"], arn)
+            )
     finally:
         conn.close()
+
 
 
 def test_secret(service_client, arn, token):
@@ -281,7 +285,7 @@ def get_connection(secret_dict):
         secret_dict (dict): The Secret Dictionary
 
     Returns:
-        Connection: The pgdb.Connection object if successful. None otherwise
+        Connection: The redshift_connector.Connection object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -293,11 +297,22 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port, connect_timeout=5)
-        logger.info("Successfully established connection as user '%s' with host: '%s'" % (secret_dict['username'], secret_dict['host']))
+        conn = redshift_connector.connect(
+            host=secret_dict["host"],
+            database=dbname,
+            port=port,
+            user=secret_dict["username"],
+            password=secret_dict["password"],
+        )
+        logger.info(
+            "Successfully established connection as user '%s' with host: '%s'"
+            % (secret_dict["username"], secret_dict["host"])
+        )
         return conn
-    except pg.InternalError:
+    except redshift_connector.Error as e:
+        logger.info("Redshift Connection attempt failed with:\n %s", e)
         return None
+
 
 
 def get_secret_dict(service_client, arn, stage, token=None):
