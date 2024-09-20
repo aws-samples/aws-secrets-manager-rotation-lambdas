@@ -49,8 +49,6 @@ def lambda_handler(event, context):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    # Thick client to match functionality of cx_oracle
-    oracledb.init_oracle_client()
 
     arn = event['SecretId']
     token = event['ClientRequestToken']
@@ -327,16 +325,95 @@ def get_connection(secret_dict):
     """
     # Parse and validate the secret JSON string
     port = str(secret_dict['port']) if 'port' in secret_dict else '1521'
+    use_ssl, fall_back = get_ssl_config(secret_dict)
 
-    # Try to obtain a connection to the db
+    conn = connect_and_authenticate(secret_dict, port, use_ssl)
+
+    if conn or not fall_back:
+        return conn
+    else:
+        return connect_and_authenticate(secret_dict, port, False)
+
+
+def connect_and_authenticate(secret_dict, port, use_ssl):
+    """Connects to Oracle DB and authenticates
+
+    This helper function tries to connect to the database using the supplied
+    connection parameters and authenticates. If successful, it returns the
+    connection, else None
+
+    Args:
+        secret_dict (dict): The Secret Dictionary
+
+        port (str): The database connection port
+
+        use_ssl (bool): Flag indicating whether to use SSL/TLS encryption
+
+    Returns:
+        Connection: The oracledb.Connection object if successful. None otherwise
+
+    Raises:
+        KeyError: If the secret json does not contain the expected keys
+
+    """
     try:
-        conn = oracledb.connect(user=secret_dict['username'],
-                                password=secret_dict['password'],
-                                dsn=secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
+        if use_ssl:
+            oracle_dsn = '''(description= (address=(protocol=tcps)
+                (port=''' + port + ''')(host=''' + secret_dict['host'] + '''))(connect_data=(SID=''' + secret_dict['dbname'] + ''')))'''
+            conn = oracledb.connect(user=secret_dict['username'],
+                                    password=secret_dict['password'],
+                                    dsn=oracle_dsn)
+        elif not use_ssl:
+            conn = oracledb.connect(user=secret_dict['username'],
+                                    password=secret_dict['password'],
+                                    dsn=secret_dict['host'] + ':' + port + '/' + secret_dict['dbname'])
         logger.info("Successfully established connection as user '%s' with host: '%s'" % (secret_dict['username'], secret_dict['host']))
+
         return conn
     except (oracledb.DatabaseError, oracledb.OperationalError):
         return None
+
+
+def get_ssl_config(secret_dict):
+    """Gets the desired SSL and fall back behavior using a secret dictionary
+
+    This helper function uses the existance and value the 'ssl' key in a secret dictionary
+    to determine desired SSL connectivity configuration. Its behavior is as follows:
+        - 'ssl' key DNE or invalid type/value: return True, True
+        - 'ssl' key is bool: return secret_dict['ssl'], False
+        - 'ssl' key equals "true" ignoring case: return True, False
+        - 'ssl' key equals "false" ignoring case: return False, False
+
+    Args:
+        secret_dict (dict): The Secret Dictionary
+
+    Returns:
+        Tuple(use_ssl, fall_back): SSL configuration
+            - use_ssl (bool): Flag indicating if an SSL connection should be attempted
+            - fall_back (bool): Flag indicating if non-SSL connection should be attempted if SSL connection fails
+
+    """
+    # Default to True for SSL and fall_back mode if 'ssl' key DNE
+    if 'ssl' not in secret_dict:
+        return True, True
+
+    # Handle type bool
+    if isinstance(secret_dict['ssl'], bool):
+        return secret_dict['ssl'], False
+
+    # Handle type string
+    if isinstance(secret_dict['ssl'], str):
+        ssl = secret_dict['ssl'].lower()
+        if ssl == "true":
+            return True, False
+        elif ssl == "false":
+            return False, False
+        else:
+            # Invalid string value, default to True for both SSL and fall_back mode
+            return True, True
+
+    # Invalid type, default to True for both SSL and fall_back mode
+    return True, True
 
 
 def get_secret_dict(service_client, arn, stage, token=None, master_secret=False):
