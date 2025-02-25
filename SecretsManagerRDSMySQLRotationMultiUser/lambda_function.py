@@ -558,6 +558,7 @@ def is_rds_replica_database(replica_dict, master_dict):
 
     Raises:
         ValueError: If the new username length would exceed the maximum allowed
+
     """
     # Setup the client
     rds_client = boto3.client('rds')
@@ -566,21 +567,123 @@ def is_rds_replica_database(replica_dict, master_dict):
     replica_instance_id = replica_dict['host'].split(".")[0]
     master_instance_id = master_dict['host'].split(".")[0]
 
-    try:
-        describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=replica_instance_id)
-    except Exception as err:
-        logger.warning("Encountered error while verifying rds replica status: %s" % err)
-        return False
-    instances = describe_response['DBInstances']
+    if master_dict['engine'] == 'mysql':
+        current_instance = get_instance_info_from_rds_api(replica_instance_id, rds_client)
+        if not current_instance:
+            return False
+        return master_instance_id == current_instance.get('ReadReplicaSourceDBInstanceIdentifier')
 
-    # Host from current secret cannot be found
-    if not instances:
-        logger.info("Cannot verify replica status - no RDS instance found with identifier: %s" % replica_instance_id)
-        return False
+    if master_dict['engine'] == 'aurora-mysql':
+        replica_info = get_cluster_info_from_master_host(master_dict, rds_client)
+        if not replica_info:
+            return False
+
+        is_reader_endpoint = (replica_dict['host'] == replica_info['reader_endpoint'])
+        is_reader_instance = any(replica_instance_id == replica_instance['instance_id'] and not replica_instance['is_writer']
+                                 for replica_instance in replica_info['instance_ids'])
+        return is_reader_endpoint or is_reader_instance
+    return False
+
+
+def get_cluster_info_from_master_host(master_dict, rds_client):
+    """Fetches replica information from the DescribeDBClusters RDS API using master host/DBClusterIdentifier as a filter.
+
+    This helper function fetches replica information from the DescribeDBClusters RDS API using master host/DBClusterIdentifier as a filter.
+
+    Agrs:
+        master_dict (dict): The secret dictionary containing the primary database
+
+        rds_client (client): The RDS service client used to query the instance
+
+    Returns:
+        replica_info (dictionary): A replica information dictionary containing the replica details from the master cluster.
+
+    """
+    master_instance_id = master_dict['host'].split(".")[0]
+
+    if 'cluster' in master_dict['host'].split(".")[1]:
+        #  The master host is a writer endpoint
+        cluster_info = get_cluster_info_from_rds_api(master_instance_id, rds_client)
+    else:
+        # The master host is an instance endpoint
+        current_instance = get_instance_info_from_rds_api(master_instance_id, rds_client)
+        if not current_instance or 'DBClusterIdentifier' not in current_instance:
+            return {}
+        cluster_info = get_cluster_info_from_rds_api(current_instance.get('DBClusterIdentifier'), rds_client)
+
+    if not cluster_info:
+        return {}
+    return {
+        'reader_endpoint': cluster_info.get('ReaderEndpoint', ''),
+        'instance_ids': [{'instance_id': member['DBInstanceIdentifier'], 'is_writer': member['IsClusterWriter']}
+                         for member in cluster_info.get('DBClusterMembers', [])]
+    }
+
+
+def get_instance_info_from_rds_api(instance_id, rds_client):
+    """Fetches RDS instance infomation from the DescribeDBInstances RDS API using DBInstanceIdentifier as a filter.
+
+    This helper function fetches RDS instance infomation from the DescribeDBInstances RDS API using DBInstanceIdentifier as a filter.
+
+    Agrs:
+        instance_id (string): The DBInstanceIdentifier of the RDS instance to describe
+
+        rds_client (client): The RDS service client used to query the instance
+
+    Returns:
+        dbInstanceResponse (dict): The DescribeDBInstances RDS API response if found, otherwise None
+
+    Rasies:
+        Exception: If the DescribeDBInstances RDS API returns an error
+
+    """
+    # Call DescribeDBInstances RDS API
+    try:
+        describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=instance_id)
+    except Exception as err:
+        logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
+        raise Exception("Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
+    # Verify the instance was found
+    instances = describe_response['DBInstances']
+    if len(instances) == 0:
+        logger.error("setSecret: %s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % instance_id)
+        raise ValueError("%s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % instance_id)
 
     # DB Instance identifiers are unique - can only be one result
-    current_instance = instances[0]
-    return master_instance_id == current_instance.get('ReadReplicaSourceDBInstanceIdentifier')
+    return instances[0]
+
+
+def get_cluster_info_from_rds_api(cluster_id, rds_client):
+    """Fetches RDS cluster infomation from the DescribeDBClusters RDS API using DBClusterIdentifier as a filter.
+
+    This helper function fetches RDS cluster infomation from the DescribeDBClusters RDS API using DBClusterIdentifier as a filter.
+
+    Agrs:
+        cluster_id (string): The DBClusterIdentifier of the RDS cluster to describe
+
+        rds_client (client): The RDS service client used to query the cluster
+
+    Returns:
+        dbClusterResponse (dict): The DescribeDBClusters RDS API response if found, otherwise None
+
+    Rasies:
+        Exception: If the DescribeDBClusters RDS API returns an error
+
+    """
+    # Call DescribeDBClusters RDS API
+    try:
+        describe_response = rds_client.describe_db_clusters(DBClusterIdentifier=cluster_id)
+    except Exception as err:
+        logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBClusters RDS API: %s" % err)
+        raise Exception("Encountered API error while fetching connection parameters from DescribeDBClusters RDS API: %s" % err)
+    # Verify the instance was found
+    clusters = describe_response['DBClusters']
+    if len(clusters) == 0:
+        logger.error("setSecret: %s is not a valid DB Cluster ARN. No Clusters found when using DescribeDBClusters RDS API to get connection params." % cluster_id)
+        raise ValueError("%s is not a valid DB Cluster ARN. No Clusters found when using DescribeDBClusters RDS API to get connection params." % cluster_id)
+
+    # DB cluster identifiers are unique - can only be one result
+    return clusters[0]
 
 
 def fetch_instance_arn_from_system_tags(service_client, secret_arn):
@@ -637,48 +740,20 @@ def get_connection_params_from_rds_api(master_dict, master_instance_info):
     Returns:
         master_dict (dictionary): An updated master secret dictionary that now contains connection parameters such as `host`, `port`, etc.
 
-    Raises:
-        Exception: If there is some error/throttling when calling the DescribeDBInstances/DescribeClusters RDS API
-
-        ValueError: If the DescribeDBInstances/DescribeDBClusters RDS API Response contains no Instances
     """
     # Setup the client
     rds_client = boto3.client('rds')
 
     if master_instance_info['ARN_SYSTEM_TAG'] == 'aws:rds:primarydbinstancearn':
-        # Call DescribeDBInstances RDS API
-        try:
-            describe_response = rds_client.describe_db_instances(DBInstanceIdentifier=master_instance_info['ARN'])
-        except Exception as err:
-            logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
-            raise Exception("Encountered API error while fetching connection parameters from DescribeDBInstances RDS API: %s" % err)
-        # Verify the instance was found
-        instances = describe_response['DBInstances']
-        if len(instances) == 0:
-            logger.error("setSecret: %s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_info['ARN'])
-            raise ValueError("%s is not a valid DB Instance ARN. No Instances found when using DescribeDBInstances RDS API to get connection params." % master_instance_info['ARN'])
-
         # put connection parameters in master secret dictionary
-        primary_instance = instances[0]
+        primary_instance = get_instance_info_from_rds_api(master_instance_info['ARN'], rds_client)
         master_dict['host'] = primary_instance['Endpoint']['Address']
         master_dict['port'] = primary_instance['Endpoint']['Port']
         master_dict['engine'] = primary_instance['Engine']
 
     elif master_instance_info['ARN_SYSTEM_TAG'] == 'aws:rds:primarydbclusterarn':
-        # Call DescribeDBClusters RDS API
-        try:
-            describe_response = rds_client.describe_db_clusters(DBClusterIdentifier=master_instance_info['ARN'])
-        except Exception as err:
-            logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBClusters RDS API: %s" % err)
-            raise Exception("Encountered API error while fetching connection parameters from DescribeDBClusters RDS API: %s" % err)
-        # Verify the instance was found
-        instances = describe_response['DBClusters']
-        if len(instances) == 0:
-            logger.error("setSecret: %s is not a valid DB Cluster ARN. No Instances found when using DescribeDBClusters RDS API to get connection params." % master_instance_info['ARN'])
-            raise ValueError("%s is not a valid DB Cluster ARN. No Instances found when using DescribeDBClusters RDS API to get connection params." % master_instance_info['ARN'])
-
         # put connection parameters in master secret dictionary
-        primary_instance = instances[0]
+        primary_instance = get_cluster_info_from_rds_api(master_instance_info['ARN'], rds_client)
         master_dict['host'] = primary_instance['Endpoint']
         master_dict['port'] = primary_instance['Port']
         master_dict['engine'] = primary_instance['Engine']
