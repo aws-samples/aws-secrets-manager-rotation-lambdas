@@ -11,6 +11,8 @@ from pymongo import MongoClient, errors
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+MAX_RDS_DB_INSTANCE_ARN_LENGTH = 256
+
 
 def lambda_handler(event, context):
     """Secrets Manager MongoDB Handler
@@ -177,9 +179,9 @@ def set_secret(service_client, arn, token):
         raise ValueError("Unable to log into database using current credentials for secret %s" % arn)
     conn.logout()
 
-    # Now get the master arn from the current secret
+    # Now get the master arn from the current secret to fetch master secret contents
     master_arn = current_dict['masterarn']
-    master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT")
+    master_dict = get_secret_dict(service_client, master_arn, "AWSCURRENT", None, True)
     if current_dict['host'] != master_dict['host']:
         logger.error("setSecret: Current database host %s is not the same host as master %s" % (current_dict['host'], master_dict['host']))
         raise ValueError("Current database host %s is not the same host as master %s" % (current_dict['host'], master_dict['host']))
@@ -387,7 +389,7 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
         return None
 
 
-def get_secret_dict(service_client, arn, stage, token=None):
+def get_secret_dict(service_client, arn, stage, token=None, master_secret=False):
     """Gets the secret dictionary corresponding for the secret arn, stage, and token
 
     This helper function gets credentials for the arn and stage passed in and returns the dictionary by parsing the JSON string
@@ -397,9 +399,11 @@ def get_secret_dict(service_client, arn, stage, token=None):
 
         arn (string): The secret ARN or other identifier
 
+        stage (string): The stage identifying the secret version
+
         token (string): The ClientRequestToken associated with the secret version, or None if no validation is desired
 
-        stage (string): The stage identifying the secret version
+        master_secret (boolean): A flag that indicates if we are getting a master secret.
 
     Returns:
         SecretDictionary: Secret dictionary
@@ -410,7 +414,7 @@ def get_secret_dict(service_client, arn, stage, token=None):
         ValueError: If the secret is not valid JSON
 
     """
-    required_fields = ['host', 'username', 'password']
+    required_fields = ['host', 'username', 'password', 'engine']
 
     # Only do VersionId validation against the stage if a token is passed in
     if token:
@@ -421,11 +425,23 @@ def get_secret_dict(service_client, arn, stage, token=None):
     secret_dict = json.loads(plaintext)
 
     # Run validations against the secret
-    if 'engine' not in secret_dict or secret_dict['engine'] != 'mongo':
-        raise KeyError("Database engine must be set to 'mongo' in order to use this rotation lambda")
+    if master_secret and (set(secret_dict.keys()) == set(['username', 'password'])):
+        # If this is an DocumentDB-made Master Secret, we can fetch `host` and other connection params
+        # from the DescribeDBClusters DocDB API using the DB Cluster ARN as a filter.
+        # The DB Cluster ARN is fetched from the DocumentDB-made Master Secret's AWS generated tags.
+        db_cluster_arn = fetch_cluster_arn_from_tags(service_client, arn)
+        if db_cluster_arn:
+            secret_dict = get_connection_params_from_docdb_api(secret_dict, db_cluster_arn)
+            logger.info("setSecret: Successfully fetched connection params for Master Secret %s from DescribeDBClusters API." % arn)
+
+        # For non-DocumentDB-made Master Secrets that are missing either `host` or `engine`, this will error below when checking for required connection params.
+
     for field in required_fields:
         if field not in secret_dict:
             raise KeyError("%s key is missing from secret JSON" % field)
+
+    if secret_dict['engine'] != 'mongo':
+        raise KeyError("Database engine must be set to 'mongo' in order to use this rotation lambda")
 
     # Parse and return the secret JSON string
     return secret_dict
@@ -451,6 +467,101 @@ def get_alt_username(current_username):
         return current_username[:(len(clone_suffix) * -1)]
     else:
         return current_username + clone_suffix
+
+
+def fetch_cluster_arn_from_tags(service_client, secret_arn):
+    """Fetches DB Cluster ARN from the given secret's metadata.
+
+    Fetches DB Cluster ARN from the given secret's metadata.
+
+    Args:
+        service_client (client): The secrets manager service client
+
+        secret_arn (String): The secret ARN used in a DescribeSecrets API call to fetch the secret's metadata.
+
+    Returns:
+        db_cluster_arn (string): The DB Cluster ARN of the Primary DocumentDB cluster
+
+    """
+    metadata = service_client.describe_secret(SecretId=secret_arn)
+
+    if 'Tags' not in metadata:
+        logger.warning("setSecret: The secret %s is not a service-linked secret, so it does not have the aws:rds:primaryDBClusterArn AWS generated tag" % secret_arn)
+        return None
+
+    tags = metadata['Tags']
+
+    # Check if DB Cluster ARN is present in secret Tags
+    db_cluster_arn = None
+    for tag in tags:
+        if tag['Key'].lower() == 'aws:rds:primarydbclusterarn':
+            db_cluster_arn = tag['Value']
+
+    # DB Cluster ARN must be present in secret AWS generated tags to use this work-around
+    if not db_cluster_arn:
+        logger.warning("setSecret: DB Cluster ARN not present in AWS generated tags for secret %s" % secret_arn)
+    elif len(db_cluster_arn) > MAX_RDS_DB_INSTANCE_ARN_LENGTH:
+        logger.error("setSecret: %s is not a valid DB Cluster ARN. It exceeds the maximum length of %d." % (db_cluster_arn, MAX_RDS_DB_INSTANCE_ARN_LENGTH))
+        raise ValueError("%s is not a valid DB Cluster ARN. It exceeds the maximum length of %d." % (db_cluster_arn, MAX_RDS_DB_INSTANCE_ARN_LENGTH))
+
+    return db_cluster_arn
+
+
+def get_connection_params_from_docdb_api(master_dict, master_cluster_arn):
+    """Fetches connection parameters (`host`, `port`, etc.) from the DescribeDBClusters DocumentDB API using `master_instance_arn` in the master secret metadata as a filter.
+
+    This helper function fetches connection parameters from the DescribeDBClusters DocumentDB API using `master_cluster_arn` in the master secret metadata as a filter.
+
+    Args:
+        master_dict (dictionary): The master secret dictionary that will be updated with connection parameters.
+
+        master_cluster_arn (string): The DB cluster ARN from master secret AWS generated tag that will be used as a filter in DescribeDBClusters DocumentDB API calls.
+
+    Returns:
+        master_dict (dictionary): An updated master secret dictionary that now contains connection parameters such as `host`, `port`, etc.
+
+    """
+    # put connection parameters in master secret dictionary
+    cluster_info = get_cluster_info_from_docdb_api(master_cluster_arn)
+    master_dict['host'] = cluster_info['Endpoint']
+    master_dict['port'] = cluster_info['Port']
+    master_dict['engine'] = 'mongo'
+
+    return master_dict
+
+
+def get_cluster_info_from_docdb_api(cluster_id):
+    """Fetches RDS cluster infomation from the DescribeDBClusters DocumentDB API using DBClusterIdentifier as a filter.
+
+    This helper function fetches RDS cluster infomation from the DescribeDBClusters DocumentDB API using DBClusterIdentifier as a filter.
+
+    Agrs:
+        cluster_id (string): The DBClusterIdentifier of the RDS cluster to describe
+
+    Returns:
+        dbClusterResponse (dict): The DescribeDBClusters DocumentDB API response if found, otherwise None
+
+    Rasies:
+        Exception: If the DescribeDBClusters DocumentDB API returns an error
+
+    """
+    # Setup the client
+    docdb_client = boto3.client('docdb')
+
+    # Call DescribeDBClusters RDS API
+    try:
+        describe_response = docdb_client.describe_db_clusters(DBClusterIdentifier=cluster_id)
+    except Exception as err:
+        logger.error("setSecret: Encountered API error while fetching connection parameters from DescribeDBClusters DocumentDB API: %s" % err)
+        raise Exception("Encountered API error while fetching connection parameters from DescribeDBClusters DocumentDB API: %s" % err)
+    # Verify the instance was found
+    clusters = describe_response['DBClusters']
+    if not clusters:
+        logger.error("setSecret: %s is not a valid DB Cluster ARN. No Clusters found when using DescribeDBClusters DocumentDB API to get connection params." % cluster_id)
+        raise ValueError("%s is not a valid DB Cluster ARN. No Clusters found when using DescribeDBClusters DocumentDB API to get connection params." % cluster_id)
+
+    # DB cluster identifiers are unique - can only be one result
+    return clusters[0]
 
 
 def get_environment_bool(variable_name, default_value):
