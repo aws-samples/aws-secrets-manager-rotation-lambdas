@@ -1,13 +1,12 @@
 # Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import re
 import boto3
 import json
 import logging
 import os
-import pg
-import pgdb
+import pg8000
+import ssl as ssl_module
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -46,9 +45,9 @@ def lambda_handler(event, context):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    arn = get_input_map_value(event, 'SecretId')
-    token = get_input_map_value(event, 'ClientRequestToken')
-    step = get_input_map_value(event, 'Step')
+    arn = event['SecretId']
+    token = event['ClientRequestToken']
+    step = event['Step']
 
     # Setup the client
     service_client = boto3.client('secretsmanager', endpoint_url=os.environ['SECRETS_MANAGER_ENDPOINT'])
@@ -56,18 +55,18 @@ def lambda_handler(event, context):
     # Make sure the version is staged correctly
     metadata = service_client.describe_secret(SecretId=arn)
     if "RotationEnabled" in metadata and not metadata['RotationEnabled']:
-        logger.error("Secret %s is not enabled for rotation" % arn)
+        logger.error("Secret %s is not enabled for rotation." % arn)
         raise ValueError("Secret %s is not enabled for rotation" % arn)
     versions = metadata['VersionIdsToStages']
     if token not in versions:
         logger.error("Secret version %s has no stage for rotation of secret %s." % (token, arn))
-        raise ValueError("Secret version %s has no stage for rotation of secret %s." % (token, arn))
+        raise ValueError("Secret version %s has no stage for rotation of secret %s" % (token, arn))
     if "AWSCURRENT" in versions[token]:
         logger.info("Secret version %s already set as AWSCURRENT for secret %s." % (token, arn))
         return
     elif "AWSPENDING" not in versions[token]:
         logger.error("Secret version %s not set as AWSPENDING for rotation of secret %s." % (token, arn))
-        raise ValueError("Secret version %s not set as AWSPENDING for rotation of secret %s." % (token, arn))
+        raise ValueError("Secret version %s not set as AWSPENDING for rotation of secret %s" % (token, arn))
 
     # Call the appropriate step
     if step == "createSecret":
@@ -83,7 +82,7 @@ def lambda_handler(event, context):
         finish_secret(service_client, arn, token)
 
     else:
-        logger.error("lambda_handler: Invalid step parameter %s for secret %s" % (step, arn))
+        logger.error("lambda_handler: Invalid step parameter %s for secret %s." % (step, arn))
         raise ValueError("Invalid step parameter %s for secret %s" % (step, arn))
 
 
@@ -124,9 +123,11 @@ def create_secret(service_client, arn, token):
 def set_secret(service_client, arn, token):
     """Set the pending secret in the database
 
-    This method tries to login to the database with the AWSPENDING secret and returns on success. If that fails, it
-    tries to login with the AWSCURRENT and AWSPREVIOUS secrets. If either one succeeds, it sets the AWSPENDING password
-    as the user password in the database. Else, it throws a ValueError.
+    This method first validates that AWSCURRENT and AWSPENDING refer to the same user and host
+    (confused deputy protection). It then logs into the database with the AWSCURRENT credential
+    and sets the password to the AWSPENDING value. If AWSCURRENT fails, it checks AWSPENDING as
+    an idempotency safeguard (in case a previous invocation already applied the password but timed
+    out). If neither works, the rotation is abandoned.
 
     Args:
         service_client (client): The secrets manager service client
@@ -143,64 +144,39 @@ def set_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
-    try:
-        previous_dict = get_secret_dict(service_client, arn, "AWSPREVIOUS")
-    except (service_client.exceptions.ResourceNotFoundException, KeyError):
-        previous_dict = None
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
 
-    # First try to login with the pending secret, if it succeeds, return
-    conn = get_connection(pending_dict)
-    if conn:
-        conn.close()
-        logger.info("setSecret: AWSPENDING secret is already set as password in PostgreSQL DB for secret arn %s." % arn)
-        return
-
-    # Make sure the user from current and pending match
+    # Validate that AWSCURRENT and AWSPENDING refer to the same resource (confused deputy protection)
     if current_dict['username'] != pending_dict['username']:
-        logger.error("setSecret: Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
-        raise ValueError("Attempting to modify user %s other than current user %s" % (pending_dict['username'], current_dict['username']))
-
-    # Make sure the host from current and pending match
+        logger.error("setSecret: AWSPENDING user '%s' does not match AWSCURRENT user '%s' for secret %s." % (pending_dict['username'], current_dict['username'], arn))
+        raise ValueError("AWSPENDING user '%s' does not match AWSCURRENT user '%s' for secret %s" % (pending_dict['username'], current_dict['username'], arn))
     if current_dict['host'] != pending_dict['host']:
-        logger.error("setSecret: Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
-        raise ValueError("Attempting to modify user for host %s other than current host %s" % (pending_dict['host'], current_dict['host']))
+        logger.error("setSecret: AWSPENDING host '%s' does not match AWSCURRENT host '%s' for secret %s." % (pending_dict['host'], current_dict['host'], arn))
+        raise ValueError("AWSPENDING host '%s' does not match AWSCURRENT host '%s' for secret %s" % (pending_dict['host'], current_dict['host'], arn))
 
-    # Now try the current password
+    # Try AWSCURRENT credential to login to the database
     conn = get_connection(current_dict)
 
-    # If both current and pending do not work, try previous
-    if not conn and previous_dict:
-        # Update previous_dict to leverage current SSL settings
-        previous_dict.pop('ssl', None)
-        if 'ssl' in current_dict:
-            previous_dict['ssl'] = current_dict['ssl']
-
-        conn = get_connection(previous_dict)
-
-        # Make sure the user/host from previous and pending match
-        if previous_dict['username'] != pending_dict['username']:
-            logger.error("setSecret: Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
-            raise ValueError("Attempting to modify user %s other than previous valid user %s" % (pending_dict['username'], previous_dict['username']))
-        if previous_dict['host'] != pending_dict['host']:
-            logger.error("setSecret: Attempting to modify user for host %s other than previous valid host %s" % (pending_dict['host'], previous_dict['host']))
-            raise ValueError("Attempting to modify user for host %s other than current previous valid %s" % (pending_dict['host'], previous_dict['host']))
-
-    # If we still don't have a connection, raise a ValueError
+    # If AWSCURRENT fails, check if AWSPENDING is already applied (idempotency for retried invocations)
     if not conn:
-        logger.error("setSecret: Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
-        raise ValueError("Unable to log into database with previous, current, or pending secret of secret arn %s" % arn)
+        conn = get_connection(pending_dict)
+        if conn:
+            conn.close()
+            logger.info("setSecret: AWSPENDING secret is already set as password in PostgreSQL DB for secret arn %s." % arn)
+            return
+        # Neither AWSCURRENT nor AWSPENDING work — abandon rotation
+        logger.error("setSecret: Unable to log into database with AWSCURRENT or AWSPENDING secret of secret arn %s." % arn)
+        raise ValueError("Unable to log into database with AWSCURRENT or AWSPENDING secret of secret arn %s" % arn)
 
     # Now set the password to the pending password
     try:
         with conn.cursor() as cur:
-            # Get escaped username via quote_ident
-            cur.execute("SELECT quote_ident(%s)", (pending_dict['username'],))
-            escaped_username = cur.fetchone()[0]
-
-            alter_role = "ALTER USER %s" % escaped_username
-            cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
+            # Use PostgreSQL's format() with %I (identifier) and %L (literal) for safe escaping
+            cur.execute("SELECT format('ALTER USER %I WITH PASSWORD %L', %s::text, %s::text)",
+                        (pending_dict['username'], pending_dict['password']))
+            alter_stmt = cur.fetchone()[0]
+            cur.execute(alter_stmt)
             conn.commit()
             logger.info("setSecret: Successfully set password for user %s in PostgreSQL DB for secret arn %s." % (pending_dict['username'], arn))
     finally:
@@ -243,8 +219,8 @@ def test_secret(service_client, arn, token):
         logger.info("testSecret: Successfully signed into PostgreSQL DB with AWSPENDING secret in %s." % arn)
         return
     else:
-        logger.error("testSecret: Unable to log into database with pending secret of secret ARN %s" % arn)
-        raise ValueError("Unable to log into database with pending secret of secret ARN %s" % arn)
+        logger.error("testSecret: Unable to log into database with pending secret of secret arn %s." % arn)
+        raise ValueError("Unable to log into database with pending secret of secret arn %s" % arn)
 
 
 def finish_secret(service_client, arn, token):
@@ -267,7 +243,7 @@ def finish_secret(service_client, arn, token):
         if "AWSCURRENT" in metadata["VersionIdsToStages"][version]:
             if version == token:
                 # The correct version is already marked as current, return
-                logger.info("finishSecret: Version %s already marked as AWSCURRENT for %s" % (version, arn))
+                logger.info("finishSecret: Version %s already marked as AWSCURRENT for %s." % (version, arn))
                 return
             current_version = version
             break
@@ -281,14 +257,13 @@ def get_connection(secret_dict):
     """Gets a connection to PostgreSQL DB from a secret dictionary
 
     This helper function uses connectivity information from the secret dictionary to initiate
-    connection attempt(s) to the database. Will attempt a fallback, non-SSL connection when
-    initial connection fails using SSL and fall_back is True.
+    a connection attempt to the database.
 
     Args:
         secret_dict (dict): The Secret Dictionary
 
     Returns:
-        Connection: The pgdb.Connection object if successful. None otherwise
+        Connection: The pg8000 Connection object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -299,56 +274,46 @@ def get_connection(secret_dict):
     dbname = secret_dict['dbname'] if 'dbname' in secret_dict else "postgres"
 
     # Get SSL connectivity configuration
-    use_ssl, fall_back = get_ssl_config(secret_dict)
+    use_ssl = get_ssl_config(secret_dict)
 
-    # if an 'ssl' key is not found or does not contain a valid value, attempt an SSL connection and fall back to non-SSL on failure
-    conn = connect_and_authenticate(secret_dict, port, dbname, use_ssl)
-    if conn or not fall_back:
-        return conn
-    else:
-        return connect_and_authenticate(secret_dict, port, dbname, False)
+    return connect_and_authenticate(secret_dict, port, dbname, use_ssl)
 
 
 def get_ssl_config(secret_dict):
-    """Gets the desired SSL and fall back behavior using a secret dictionary
+    """Gets the desired SSL configuration from a secret dictionary
 
-    This helper function uses the existance and value the 'ssl' key in a secret dictionary
+    This helper function uses the existence and value of the 'ssl' key in a secret dictionary
     to determine desired SSL connectivity configuration. Its behavior is as follows:
-        - 'ssl' key DNE or invalid type/value: return True, True
-        - 'ssl' key is bool: return secret_dict['ssl'], False
-        - 'ssl' key equals "true" ignoring case: return True, False
-        - 'ssl' key equals "false" ignoring case: return False, False
+        - 'ssl' key DNE or invalid type/value: return True (SSL required, no fallback to plaintext)
+        - 'ssl' key is bool: return secret_dict['ssl']
+        - 'ssl' key equals "true" ignoring case: return True
+        - 'ssl' key equals "false" ignoring case: return False
 
     Args:
         secret_dict (dict): The Secret Dictionary
 
     Returns:
-        Tuple(use_ssl, fall_back): SSL configuration
-            - use_ssl (bool): Flag indicating if an SSL connection should be attempted
-            - fall_back (bool): Flag indicating if non-SSL connection should be attempted if SSL connection fails
+        bool: True if SSL connection should be used, False otherwise
 
     """
-    # Default to True for SSL and fall_back mode if 'ssl' key DNE
+    # Default to SSL required if 'ssl' key is missing
     if 'ssl' not in secret_dict:
-        return True, True
+        return True
 
     # Handle type bool
     if isinstance(secret_dict['ssl'], bool):
-        return secret_dict['ssl'], False
+        return secret_dict['ssl']
 
     # Handle type string
     if isinstance(secret_dict['ssl'], str):
         ssl = secret_dict['ssl'].lower()
         if ssl == "true":
-            return True, False
+            return True
         elif ssl == "false":
-            return False, False
-        else:
-            # Invalid string value, default to True for both SSL and fall_back mode
-            return True, True
+            return False
 
-    # Invalid type, default to True for both SSL and fall_back mode
-    return True, True
+    # Invalid type or value, default to SSL required
+    return True
 
 
 def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
@@ -359,12 +324,12 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
 
     Args:
         - secret_dict (dict): The Secret Dictionary
-        - port (int): The databse port to connect to
+        - port (int): The database port to connect to
         - dbname (str): Name of the database
         - use_ssl (bool): Flag indicating whether connection should use SSL/TLS
 
     Returns:
-        Connection: The pymongo.database.Database object if successful. None otherwise
+        Connection: The pg8000 Connection object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -373,21 +338,40 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
     # Try to obtain a connection to the db
     try:
         if use_ssl:
-            # Setting sslmode='verify-full' will verify the server's certificate and check the server's host name
-            conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
-                                connect_timeout=5, sslrootcert='/etc/pki/tls/cert.pem', sslmode='verify-full')
+            # Use verify-ca: validates certificate chain but not hostname,
+            # allowing Route53 CNAMEs that differ from the RDS certificate CN/SAN
+            ssl_context = ssl_module.create_default_context()
+            ssl_context.check_hostname = False
+            conn = pg8000.connect(
+                host=secret_dict['host'],
+                user=secret_dict['username'],
+                password=secret_dict['password'],
+                database=dbname,
+                port=port,
+                timeout=5,
+                ssl_context=ssl_context
+            )
         else:
-            conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
-                                connect_timeout=5, sslmode='disable')
+            conn = pg8000.connect(
+                host=secret_dict['host'],
+                user=secret_dict['username'],
+                password=secret_dict['password'],
+                database=dbname,
+                port=port,
+                timeout=5
+            )
         logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
         return conn
-    except pg.InternalError as e:
-        if "server does not support SSL, but SSL was required" in e.args[0]:
-            logger.error("Unable to establish SSL/TLS handshake, SSL/TLS is not enabled on the host: %s" % secret_dict['host'])
-        elif re.search('server common name ".+" does not match host name ".+"', e.args[0]):
-            logger.error("Hostname verification failed when estlablishing SSL/TLS Handshake with host: %s" % secret_dict['host'])
-        elif re.search('no pg_hba.conf entry for host ".+", SSL off', e.args[0]):
-            logger.error("Unable to establish SSL/TLS handshake, SSL/TLS is enforced on the host: %s" % secret_dict['host'])
+    except (pg8000.InterfaceError, pg8000.DatabaseError) as e:
+        error_msg = str(e)
+        if "server does not support SSL" in error_msg:
+            logger.warning("Unable to establish SSL/TLS handshake, SSL/TLS is not enabled on the host: %s" % secret_dict['host'])
+        elif "no pg_hba.conf entry" in error_msg:
+            logger.warning("Connection rejected for user '%s' on host '%s', no pg_hba.conf entry found." % (secret_dict['username'], secret_dict['host']))
+        elif "28P01" in error_msg or "password authentication failed" in error_msg:
+            logger.warning("Authentication failed for user '%s' on host '%s' (SSL=%s)." % (secret_dict['username'], secret_dict['host'], use_ssl))
+        else:
+            logger.warning("Unable to establish connection to host '%s': %s" % (secret_dict['host'], error_msg))
         return None
 
 
@@ -427,10 +411,10 @@ def get_secret_dict(service_client, arn, stage, token=None):
     # Run validations against the secret
     supported_engines = ["postgres", "aurora-postgresql"]
     if 'engine' not in secret_dict or secret_dict['engine'] not in supported_engines:
-        raise KeyError("Database engine must be set to 'postgres' in order to use this rotation lambda")
+        raise KeyError("Database engine must be set to 'postgres' or 'aurora-postgresql' in secret %s. Found: '%s'." % (arn, secret_dict.get('engine', '<missing>')))
     for field in required_fields:
         if field not in secret_dict:
-            raise KeyError("%s key is missing from secret JSON" % field)
+            raise KeyError("%s key is missing from secret JSON for secret %s." % (field, arn))
 
     # Parse and return the secret JSON string
     return secret_dict
@@ -480,28 +464,3 @@ def get_random_password(service_client):
         RequireEachIncludedType=get_environment_bool('REQUIRE_EACH_INCLUDED_TYPE', True)
     )
     return passwd['RandomPassword']
-
-
-def get_input_map_value(input_dict, field_name):
-    """Gets a value from a dictionary provided as an input to the lambda function.
-    This function will raise an exception if the field is not found, or if the value contains an invalid character
-
-    Args:
-        input_dict (dictionary): The raw input dictionary passed to the lambda
-
-        field_name (string): The name of the field to pull from the input dictionary (key)
-
-    Returns:
-        string: Value from the user input with regex filtering
-
-    Raises:
-        ValueError: If the field is not found, or the value contains an invalid character
-
-    """
-    if field_name in input_dict:
-        raw_value = input_dict[field_name]
-        if re.match(r'^[ -~]+$', raw_value) is not None:
-            return raw_value
-        else:
-            raise ValueError("\"%s\" contains invalid characters. Only printable ASCII characters are allowed." % field_name)
-    raise ValueError("No value provided for \"%s\"." % field_name)
