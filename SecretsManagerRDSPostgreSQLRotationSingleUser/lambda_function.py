@@ -53,6 +53,8 @@ def lambda_handler(event, context):
     # Setup the client
     service_client = boto3.client('secretsmanager', endpoint_url=os.environ['SECRETS_MANAGER_ENDPOINT'])
 
+    password_encryption = os.environ.get('PASSWORD_ENCRYPTION')
+
     # Make sure the version is staged correctly
     metadata = service_client.describe_secret(SecretId=arn)
     if "RotationEnabled" in metadata and not metadata['RotationEnabled']:
@@ -74,7 +76,7 @@ def lambda_handler(event, context):
         create_secret(service_client, arn, token)
 
     elif step == "setSecret":
-        set_secret(service_client, arn, token)
+        set_secret(service_client, arn, token, password_encryption)
 
     elif step == "testSecret":
         test_secret(service_client, arn, token)
@@ -121,7 +123,7 @@ def create_secret(service_client, arn, token):
         logger.info("createSecret: Successfully put secret for ARN %s and version %s." % (arn, token))
 
 
-def set_secret(service_client, arn, token):
+def set_secret(service_client, arn, token, password_encryption):
     """Set the pending secret in the database
 
     This method tries to login to the database with the AWSPENDING secret and returns on success. If that fails, it
@@ -198,6 +200,10 @@ def set_secret(service_client, arn, token):
             # Get escaped username via quote_ident
             cur.execute("SELECT quote_ident(%s)", (pending_dict['username'],))
             escaped_username = cur.fetchone()[0]
+
+            # Set encryption algorithm
+            if password_encryption:
+                cur.execute("SET password_encryption=%s", (password_encryption,))
 
             alter_role = "ALTER USER %s" % escaped_username
             cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
