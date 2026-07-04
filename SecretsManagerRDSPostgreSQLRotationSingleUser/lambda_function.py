@@ -1,13 +1,12 @@
-# Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: MIT-0
 
 import re
+import ssl
 import boto3
 import json
 import logging
 import os
-import pg
-import pgdb
+import pg8000
+import pg8000.exceptions
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -46,6 +45,7 @@ def lambda_handler(event, context):
         KeyError: If the secret json does not contain the expected keys
 
     """
+    logger.info(f"Recieved events : {event}")
     arn = get_input_map_value(event, 'SecretId')
     token = get_input_map_value(event, 'ClientRequestToken')
     step = get_input_map_value(event, 'Step')
@@ -55,6 +55,7 @@ def lambda_handler(event, context):
 
     # Make sure the version is staged correctly
     metadata = service_client.describe_secret(SecretId=arn)
+    logger.info(f"Metadata : {metadata}")
     if "RotationEnabled" in metadata and not metadata['RotationEnabled']:
         logger.error("Secret %s is not enabled for rotation" % arn)
         raise ValueError("Secret %s is not enabled for rotation" % arn)
@@ -106,8 +107,11 @@ def create_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
+    logger.info("createSecret: Creating secret for ARN %s and version %s." % (arn, token))
+
     # Make sure the current secret exists
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
+    # logger.info(f"Current dict of AWS CURRENT: {current_dict}")
 
     # Now try to get the secret version, if that fails, put a new secret
     try:
@@ -143,12 +147,16 @@ def set_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
+    logger.info("setSecret: Setting password for ARN %s and version %s." % (arn, token))
     try:
         previous_dict = get_secret_dict(service_client, arn, "AWSPREVIOUS")
+        # logger.info(f"Previous dict of AWS PREVIOUS: {previous_dict}")
     except (service_client.exceptions.ResourceNotFoundException, KeyError):
         previous_dict = None
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
+    # logger.info(f"Current dict of AWS CURRENT: {current_dict}")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+    # logger.info(f"Pending dict of AWS PENDING: {pending_dict}")
 
     # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
@@ -200,7 +208,11 @@ def set_secret(service_client, arn, token):
             escaped_username = cur.fetchone()[0]
 
             alter_role = "ALTER USER %s" % escaped_username
-            cur.execute(alter_role + " WITH PASSWORD %s", (pending_dict['password'],))
+            alter_stmt = "ALTER USER {} WITH PASSWORD '{}'".format(
+                pending_dict['username'],
+                pending_dict['password'].replace("'", "''")
+            )
+            cur.execute(alter_stmt)
             conn.commit()
             logger.info("setSecret: Successfully set password for user %s in PostgreSQL DB for secret arn %s." % (pending_dict['username'], arn))
     finally:
@@ -288,7 +300,7 @@ def get_connection(secret_dict):
         secret_dict (dict): The Secret Dictionary
 
     Returns:
-        Connection: The pgdb.Connection object if successful. None otherwise
+        Connection: The pg8000 Connection object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -297,6 +309,7 @@ def get_connection(secret_dict):
     # Parse and validate the secret JSON string
     port = int(secret_dict['port']) if 'port' in secret_dict else 5432
     dbname = secret_dict['dbname'] if 'dbname' in secret_dict else "postgres"
+    logger.info("Connecting to %s:%i/%s" % (secret_dict['host'], port, dbname))
 
     # Get SSL connectivity configuration
     use_ssl, fall_back = get_ssl_config(secret_dict)
@@ -338,10 +351,10 @@ def get_ssl_config(secret_dict):
 
     # Handle type string
     if isinstance(secret_dict['ssl'], str):
-        ssl = secret_dict['ssl'].lower()
-        if ssl == "true":
+        ssl_val = secret_dict['ssl'].lower()
+        if ssl_val == "true":
             return True, False
-        elif ssl == "false":
+        elif ssl_val == "false":
             return False, False
         else:
             # Invalid string value, default to True for both SSL and fall_back mode
@@ -349,6 +362,22 @@ def get_ssl_config(secret_dict):
 
     # Invalid type, default to True for both SSL and fall_back mode
     return True, True
+
+
+def build_ssl_context():
+    """Builds an SSLContext equivalent to the previous sslrootcert/sslmode='verify-full' behavior.
+
+    Verifies the server's certificate and checks the server's host name against the
+    system's trusted CA bundle (Lambda's Amazon Linux base image ships one at
+    /etc/pki/tls/cert.pem, matching what the original code referenced).
+
+    Returns:
+        ssl.SSLContext: A context configured for full certificate + hostname verification
+    """
+    context = ssl.create_default_context(cafile='/etc/pki/tls/cert.pem')
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
 
 
 def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
@@ -364,7 +393,7 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
         - use_ssl (bool): Flag indicating whether connection should use SSL/TLS
 
     Returns:
-        Connection: The pymongo.database.Database object if successful. None otherwise
+        Connection: The pg8000 Connection object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -372,22 +401,34 @@ def connect_and_authenticate(secret_dict, port, dbname, use_ssl):
     """
     # Try to obtain a connection to the db
     try:
-        if use_ssl:
-            # Setting sslmode='verify-full' will verify the server's certificate and check the server's host name
-            conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
-                                connect_timeout=5, sslrootcert='/etc/pki/tls/cert.pem', sslmode='verify-full')
-        else:
-            conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port,
-                                connect_timeout=5, sslmode='disable')
+        ssl_context = build_ssl_context() if use_ssl else None
+        conn = pg8000.connect(
+            host=secret_dict['host'],
+            user=secret_dict['username'],
+            password=secret_dict['password'],
+            database=dbname,
+            port=port,
+            timeout=5,
+            ssl_context=ssl_context,
+        )
         logger.info("Successfully established %s connection as user '%s' with host: '%s'" % ("SSL/TLS" if use_ssl else "non SSL/TLS", secret_dict['username'], secret_dict['host']))
         return conn
-    except pg.InternalError as e:
-        if "server does not support SSL, but SSL was required" in e.args[0]:
+    except pg8000.exceptions.DatabaseError as e:
+        message = str(e.args[0]) if e.args else str(e)
+        if "server does not support SSL, but SSL was required" in message:
             logger.error("Unable to establish SSL/TLS handshake, SSL/TLS is not enabled on the host: %s" % secret_dict['host'])
-        elif re.search('server common name ".+" does not match host name ".+"', e.args[0]):
+        elif re.search('server common name ".+" does not match host name ".+"', message):
             logger.error("Hostname verification failed when estlablishing SSL/TLS Handshake with host: %s" % secret_dict['host'])
-        elif re.search('no pg_hba.conf entry for host ".+", SSL off', e.args[0]):
+        elif re.search('no pg_hba.conf entry for host ".+", SSL off', message):
             logger.error("Unable to establish SSL/TLS handshake, SSL/TLS is enforced on the host: %s" % secret_dict['host'])
+        else:
+            logger.error("Database error while connecting to host %s: %s" % (secret_dict['host'], message))
+        return None
+    except (ssl.SSLError, ssl.SSLCertVerificationError) as e:
+        logger.error("SSL/TLS handshake failed with host %s: %s" % (secret_dict['host'], str(e)))
+        return None
+    except (pg8000.exceptions.InterfaceError, OSError) as e:
+        logger.error("Unable to connect to host %s: %s" % (secret_dict['host'], str(e)))
         return None
 
 
@@ -414,6 +455,8 @@ def get_secret_dict(service_client, arn, stage, token=None):
         ValueError: If the secret is not valid JSON
 
     """
+    logger.info("Getting secret %s for stage %s" % (arn, stage))
+
     required_fields = ['host', 'username', 'password']
 
     # Only do VersionId validation against the stage if a token is passed in
