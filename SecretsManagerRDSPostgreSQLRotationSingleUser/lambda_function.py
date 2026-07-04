@@ -1,5 +1,3 @@
-# Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: MIT-0
 
 import re
 import boto3
@@ -46,6 +44,7 @@ def lambda_handler(event, context):
         KeyError: If the secret json does not contain the expected keys
 
     """
+    logger.info(f"Recieved events : {event}")
     arn = get_input_map_value(event, 'SecretId')
     token = get_input_map_value(event, 'ClientRequestToken')
     step = get_input_map_value(event, 'Step')
@@ -55,6 +54,7 @@ def lambda_handler(event, context):
 
     # Make sure the version is staged correctly
     metadata = service_client.describe_secret(SecretId=arn)
+    logger.info(f"Metadata : {metadata}")
     if "RotationEnabled" in metadata and not metadata['RotationEnabled']:
         logger.error("Secret %s is not enabled for rotation" % arn)
         raise ValueError("Secret %s is not enabled for rotation" % arn)
@@ -106,8 +106,11 @@ def create_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
+    logger.info("createSecret: Creating secret for ARN %s and version %s." % (arn, token))
+
     # Make sure the current secret exists
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
+    logger.info(f"Current dict of AWS CURRENT: {current_dict}")
 
     # Now try to get the secret version, if that fails, put a new secret
     try:
@@ -143,12 +146,16 @@ def set_secret(service_client, arn, token):
         KeyError: If the secret json does not contain the expected keys
 
     """
+    logger.info("setSecret: Setting password for ARN %s and version %s." % (arn, token))
     try:
         previous_dict = get_secret_dict(service_client, arn, "AWSPREVIOUS")
+        logger.info(f"Previous dict of AWS PREVIOUS: {previous_dict}")
     except (service_client.exceptions.ResourceNotFoundException, KeyError):
         previous_dict = None
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
+    logger.info(f"Current dict of AWS CURRENT: {current_dict}")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
+    logger.info(f"Pending dict of AWS PENDING: {pending_dict}")
 
     # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
@@ -297,6 +304,7 @@ def get_connection(secret_dict):
     # Parse and validate the secret JSON string
     port = int(secret_dict['port']) if 'port' in secret_dict else 5432
     dbname = secret_dict['dbname'] if 'dbname' in secret_dict else "postgres"
+    logger.info("Connecting to %s:%i/%s" % (secret_dict['host'], port, dbname))
 
     # Get SSL connectivity configuration
     use_ssl, fall_back = get_ssl_config(secret_dict)
@@ -414,6 +422,8 @@ def get_secret_dict(service_client, arn, stage, token=None):
         ValueError: If the secret is not valid JSON
 
     """
+    logger.info("Getting secret %s for stage %s" % (arn, stage))
+
     required_fields = ['host', 'username', 'password']
 
     # Only do VersionId validation against the stage if a token is passed in
