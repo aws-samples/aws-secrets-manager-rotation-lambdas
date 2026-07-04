@@ -110,7 +110,7 @@ def create_secret(service_client, arn, token):
 
     # Make sure the current secret exists
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
-    logger.info(f"Current dict of AWS CURRENT: {current_dict}")
+    # logger.info(f"Current dict of AWS CURRENT: {current_dict}")
 
     # Now try to get the secret version, if that fails, put a new secret
     try:
@@ -149,13 +149,13 @@ def set_secret(service_client, arn, token):
     logger.info("setSecret: Setting password for ARN %s and version %s." % (arn, token))
     try:
         previous_dict = get_secret_dict(service_client, arn, "AWSPREVIOUS")
-        logger.info(f"Previous dict of AWS PREVIOUS: {previous_dict}")
+        # logger.info(f"Previous dict of AWS PREVIOUS: {previous_dict}")
     except (service_client.exceptions.ResourceNotFoundException, KeyError):
         previous_dict = None
     current_dict = get_secret_dict(service_client, arn, "AWSCURRENT")
-    logger.info(f"Current dict of AWS CURRENT: {current_dict}")
+    # logger.info(f"Current dict of AWS CURRENT: {current_dict}")
     pending_dict = get_secret_dict(service_client, arn, "AWSPENDING", token)
-    logger.info(f"Pending dict of AWS PENDING: {pending_dict}")
+    # logger.info(f"Pending dict of AWS PENDING: {pending_dict}")
 
     # First try to login with the pending secret, if it succeeds, return
     conn = get_connection(pending_dict)
