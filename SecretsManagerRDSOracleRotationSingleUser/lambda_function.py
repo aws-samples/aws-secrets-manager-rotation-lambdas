@@ -11,6 +11,22 @@ import re
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Enable Oracle Thick mode if requested via environment variable.
+# Thick mode is required for features such as Native Network Encryption (NNE),
+# checksumming, Kerberos authentication, and connections to Oracle DB versions
+# prior to 12.1. When enabled, Oracle Instant Client libraries must be available
+# in the system library search path (LD_LIBRARY_PATH). A Lambda Layer containing
+# Oracle Instant Client Basic Lite and libaio.so.1 is the recommended approach.
+#
+# Supported environment variables for thick mode:
+#   - ORACLE_THICK_MODE: Set to 'true' to enable thick mode (default: false)
+#   - ORACLE_CLIENT_CONFIG_DIR: Optional path to Oracle Net config files
+#     (tnsnames.ora, sqlnet.ora). Defaults to None (uses standard search paths).
+if os.environ.get('ORACLE_THICK_MODE', 'false').lower() in ['true', '1', 'y', 'yes']:
+    config_dir = os.environ.get('ORACLE_CLIENT_CONFIG_DIR')
+    oracledb.init_oracle_client(config_dir=config_dir)
+    logger.info("Oracle Thick mode enabled (config_dir=%s)" % config_dir)
+
 
 def lambda_handler(event, context):
     """Secrets Manager RDS Oracle Handler
