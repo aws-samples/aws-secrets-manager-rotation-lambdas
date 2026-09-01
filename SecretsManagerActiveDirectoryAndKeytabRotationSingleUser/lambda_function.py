@@ -543,11 +543,13 @@ def finish_secret(secrets_manager_client, arn, token):
     for version in metadata["VersionIdsToStages"]:
         if "AWSCURRENT" in metadata["VersionIdsToStages"][version]:
             if version == token:
-                # The correct version is already marked as current, return
+                # The correct version is already marked as current, remove any
+                # lingering AWSPENDING label and return
                 logger.info(
                     "finishSecret: Version %s already marked as AWSCURRENT "
                     "for %s" % (version, arn)
                 )
+                remove_pending_stage(secrets_manager_client, arn, token)
                 return
             current_version = version
             break
@@ -569,6 +571,48 @@ def finish_secret(secrets_manager_client, arn, token):
     pending_dict = get_secret_dict(secrets_manager_client, arn, "AWSPENDING", token)
     keytab_arns = pending_dict[DICT_KEY_KEYTAB_ARNS]
     finish_keytabs(secrets_manager_client, keytab_arns, token)
+
+    # The version is now AWSCURRENT, drop the AWSPENDING staging label from it
+    remove_pending_stage(secrets_manager_client, arn, token)
+
+
+def remove_pending_stage(secrets_manager_client, arn, token):
+    """
+    Removes the AWSPENDING staging label from the given secret version.
+    Secrets Manager removes AWSPENDING when it completes a rotation that it
+    started, so this is a no-op for a scheduled rotation. It matters for the
+    cases Secrets Manager does not clean up after, such as a direct invocation
+    of this function or a secret this function stages that is not the secret
+    being rotated, where the lingering label can block the next rotation.
+    Args:
+        secrets_manager_client (client): The secrets manager service client
+        arn (string): The secret ARN or other identifier
+        token (string): The ClientRequestToken associated with the secret version
+    """
+    metadata = secrets_manager_client.describe_secret(SecretId=arn)
+    if "AWSPENDING" not in metadata["VersionIdsToStages"].get(token, []):
+        return
+
+    try:
+        secrets_manager_client.update_secret_version_stage(
+            SecretId=arn,
+            VersionStage="AWSPENDING",
+            RemoveFromVersionId=token,
+        )
+        logger.info(
+            "finishSecret: Successfully removed AWSPENDING stage from version %s for "
+            "secret %s." % (token, arn)
+        )
+    except (
+        secrets_manager_client.exceptions.InvalidParameterException,
+        secrets_manager_client.exceptions.InvalidRequestException,
+    ):
+        # The staging label was removed by someone else between the describe
+        # and the update, nothing left to do
+        logger.info(
+            "finishSecret: AWSPENDING stage is not attached to version %s for "
+            "secret %s." % (token, arn)
+        )
 
 
 def finish_keytabs(secrets_manager_client, keytab_arns, token):
@@ -603,6 +647,7 @@ def finish_keytabs(secrets_manager_client, keytab_arns, token):
                 "finishKeytab: Version %s already marked as AWSCURRENT "
                 "for %s" % (current_version, keytab_arn)
             )
+            remove_pending_stage(secrets_manager_client, keytab_arn, token)
             continue
 
         # Finalize by staging the secret version current
@@ -616,6 +661,11 @@ def finish_keytabs(secrets_manager_client, keytab_arns, token):
             "finishKeytab: Successfully set AWSCURRENT stage to version %s for "
             "secret %s." % (token, keytab_arn)
         )
+
+        # The keytab version is now AWSCURRENT, drop its AWSPENDING staging
+        # label. Secrets Manager only cleans up the secret being rotated, so
+        # the keytab secrets staged here have to be cleaned up explicitly.
+        remove_pending_stage(secrets_manager_client, keytab_arn, token)
 
 
 def get_secret_dict(secrets_manager_client, arn, stage, token=None):
