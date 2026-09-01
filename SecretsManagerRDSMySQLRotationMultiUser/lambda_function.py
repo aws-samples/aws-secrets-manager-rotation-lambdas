@@ -307,8 +307,9 @@ def finish_secret(service_client, arn, token):
     for version in metadata["VersionIdsToStages"]:
         if "AWSCURRENT" in metadata["VersionIdsToStages"][version]:
             if version == token:
-                # The correct version is already marked as current, return
+                # The correct version is already marked as current, remove any lingering AWSPENDING label and return
                 logger.info("finishSecret: Version %s already marked as AWSCURRENT for %s" % (version, arn))
+                remove_pending_stage(service_client, arn, token)
                 return
             current_version = version
             break
@@ -316,6 +317,37 @@ def finish_secret(service_client, arn, token):
     # Finalize by staging the secret version current
     service_client.update_secret_version_stage(SecretId=arn, VersionStage="AWSCURRENT", MoveToVersionId=token, RemoveFromVersionId=current_version)
     logger.info("finishSecret: Successfully set AWSCURRENT stage to version %s for secret %s." % (token, arn))
+
+    # The version is now AWSCURRENT, drop the AWSPENDING staging label from it
+    remove_pending_stage(service_client, arn, token)
+
+
+def remove_pending_stage(service_client, arn, token):
+    """Removes the AWSPENDING staging label from the given secret version
+
+    Secrets Manager removes AWSPENDING when it completes a rotation that it started, so this is a no-op for a
+    scheduled rotation. It matters for the cases Secrets Manager does not clean up after, such as a direct
+    invocation of this function or a version that is left staged as both AWSCURRENT and AWSPENDING, where the
+    lingering label can block the next rotation.
+
+    Args:
+        service_client (client): The secrets manager service client
+
+        arn (string): The secret ARN or other identifier
+
+        token (string): The ClientRequestToken associated with the secret version
+
+    """
+    metadata = service_client.describe_secret(SecretId=arn)
+    if "AWSPENDING" not in metadata["VersionIdsToStages"].get(token, []):
+        return
+
+    try:
+        service_client.update_secret_version_stage(SecretId=arn, VersionStage="AWSPENDING", RemoveFromVersionId=token)
+        logger.info("finishSecret: Successfully removed AWSPENDING stage from version %s for secret %s." % (token, arn))
+    except (service_client.exceptions.InvalidParameterException, service_client.exceptions.InvalidRequestException):
+        # The staging label was removed by someone else between the describe and the update, nothing left to do
+        logger.info("finishSecret: AWSPENDING stage is not attached to version %s for secret %s." % (token, arn))
 
 
 def get_connection(secret_dict):
