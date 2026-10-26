@@ -24,6 +24,25 @@ def lambda_handler(event, context):
     simply creates a new secret with the AWSPREVIOUS user credentials, changes that user's password, and then marks the
     latest secret as AWSCURRENT.
 
+    Security note: the setSecret step changes the password with a
+    CREATE ROLE / ALTER USER ... WITH PASSWORD statement. The password is a bind
+    parameter and is not written to this Lambda's logs, but if statement logging
+    is enabled on the database (log_statement = 'all'/'ddl'/'mod', or
+    log_min_duration_statement >= 0) the PostgreSQL server logs it in cleartext.
+    For RDS/Aurora master users, prefer managed master user password rotation,
+    which is recommended because it rotates the password without issuing a
+    loggable SQL statement:
+    https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-secrets-manager.html
+    Logging can alternatively be suppressed for just the rotation transaction,
+    but only if the rotation role has privilege to set these parameters -- this
+    scheme connects as the master user, which does. To apply it, wrap the
+    CREATE ROLE / ALTER USER calls in set_secret() below as:
+        BEGIN;
+        SET LOCAL log_statement = 'none';
+        SET LOCAL log_min_duration_statement = -1;
+        CREATE ROLE ... / ALTER USER ... WITH PASSWORD ...;
+        COMMIT;
+
     The Secret SecretString is expected to be a JSON string with the following format:
     {
         'engine': <required: must be set to 'postgres'>,
